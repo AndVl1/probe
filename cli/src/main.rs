@@ -34,6 +34,10 @@ pub struct Args {
     #[arg(long, value_name = "BYTES")]
     pub min_size: Option<usize>,
 
+    /// Save all captured transactions to a JSONL file (one JSON per line)
+    #[arg(long, value_name = "FILE")]
+    pub save: Option<std::path::PathBuf>,
+
     /// Disable colored output
     #[arg(long)]
     pub no_color: bool,

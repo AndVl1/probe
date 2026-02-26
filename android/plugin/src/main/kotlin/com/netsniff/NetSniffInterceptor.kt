@@ -1,7 +1,6 @@
 package com.netsniff
 
 import com.netsniff.model.HttpTransaction
-import com.netsniff.transport.NetSniffTransport
 import okhttp3.Interceptor
 import okhttp3.Response
 import okio.Buffer
@@ -9,7 +8,7 @@ import java.util.UUID
 
 /**
  * OkHttp interceptor that captures HTTP transactions and forwards them
- * to the configured [NetSniffTransport].
+ * to [NetSniff.record], which buffers them and sends via configured transport.
  *
  * Usage:
  * ```kotlin
@@ -19,8 +18,7 @@ import java.util.UUID
  * ```
  */
 class NetSniffInterceptor internal constructor(
-    private val transport: NetSniffTransport,
-    private val appId: String?,
+    private val netSniff: NetSniff,
     private val maxBodySize: Long = 1024 * 1024L // 1MB
 ) : Interceptor {
 
@@ -66,7 +64,7 @@ class NetSniffInterceptor internal constructor(
             responseCode = response.code
             responseMessage = response.message
             responseHeaders = response.headers.toMap()
-            // peekBody() reads without consuming the stream - response is still usable by caller
+            // peekBody() reads without consuming the stream — response is still usable by caller
             val peeked = response.peekBody(maxBodySize)
             responseBody = peeked.string()
             responseSizeBytes = responseBody?.length?.toLong()
@@ -86,11 +84,12 @@ class NetSniffInterceptor internal constructor(
             responseBody = responseBody,
             responseSizeBytes = responseSizeBytes,
             durationMs = durationMs,
-            appId = appId,
+            appId = null, // appId is stamped in NetSniff.record()
             error = errorMessage
         )
 
-        transport.send(transaction)
+        // record() stores in ring buffer AND forwards to transport
+        netSniff.record(transaction)
 
         return response ?: throw java.io.IOException(errorMessage ?: "Request failed")
     }

@@ -17,6 +17,7 @@ sdk/android/plugin-prefs/build/
 sdk/android/plugin-layout/build/
 sdk/android/sample/build/
 sdk/android/local.properties
+sdk/ios/.build/
 *.apk
 *.aab
 *.aar

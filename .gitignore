@@ -8,6 +8,15 @@ android/build/
 android/plugin/build/
 android/sample/build/
 android/local.properties
+sdk/android/.gradle/
+sdk/android/build/
+sdk/android/core/build/
+sdk/android/plugin-network/build/
+sdk/android/plugin-db/build/
+sdk/android/plugin-prefs/build/
+sdk/android/plugin-layout/build/
+sdk/android/sample/build/
+sdk/android/local.properties
 *.apk
 *.aab
 *.aar

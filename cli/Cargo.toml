@@ -1,11 +1,11 @@
 [package]
-name = "netsniff"
+name = "probe"
 version = "0.1.0"
 edition = "2021"
-description = "Android network traffic sniffer for debugging AI agent requests"
+description = "Plugin-based mobile app inspector for debugging AI agents — CLI tool"
 
 [[bin]]
-name = "netsniff"
+name = "probe"
 path = "src/main.rs"
 
 [dependencies]

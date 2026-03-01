@@ -19,7 +19,7 @@ impl Displayer {
 
     pub fn print_startup_banner(&self, port: u16) {
         let version = env!("CARGO_PKG_VERSION");
-        let title = format!("  NetSniff v{}  •  Listening on :{}       ", version, port);
+        let title = format!("  Probe v{}  •  Listening on :{}       ", version, port);
         let waiting = "  Waiting for Android plugin connection...     ";
 
         // Determine width based on longest line

@@ -1,45 +1,58 @@
-# NetSniff
+# Probe
 
-A network traffic sniffer for Android apps — built for debugging AI agent HTTP requests.
+A plugin-based mobile app inspector — built for debugging AI agent HTTP requests and more.
 
-Inspired by [Facebook Flipper](https://github.com/facebook/flipper), NetSniff gives you real-time visibility into every HTTP request your Android app makes, displayed in a beautiful terminal UI.
+Inspired by [Facebook Flipper](https://github.com/facebook/flipper), Probe gives you real-time visibility into your mobile app via a beautiful terminal UI.
 
 ```
 ╔═══════════════════════════════════════════════════╗
-║  NetSniff v0.1.0  •  Listening on :8484           ║
-║  Waiting for Android plugin connection...         ║
+║  Probe v0.1.0  •  Listening on :8484              ║
+║  Waiting for plugin connection...                  ║
 ╚═══════════════════════════════════════════════════╝
 
-[12:34:56] 📱 Connected: com.netsniff.sample (sdk_gphone64_x86_64, Android 14)
-[12:34:57] ● GET    https://swapi.dev/api/people/   200  342ms  2.1KB
-[12:34:58] ● GET    https://swapi.dev/api/films/    200  123ms  8.4KB
-[12:34:59] ● GET    https://swapi.dev/api/planets/  200  456ms  3.7KB
+[12:34:56] 📱 Connected: dev.probe.sample (Nothing Phone 2, Android 15)
+[12:34:57] ● GET    https://swapi.py4e.com/api/people/   200  342ms  2.1KB
+[12:34:58] ● GET    https://swapi.py4e.com/api/films/    200  880ms  8.4KB
+[12:34:59] ● GET    https://swapi.py4e.com/api/planets/  200  456ms  3.7KB
 ```
 
 ## Architecture
 
 ```
-┌─────────────────────────────────┐     WebSocket      ┌──────────────────────┐
-│  Android App                    │  ──────────────►   │  NetSniff CLI (Rust) │
-│                                 │     JSON msgs       │                      │
-│  OkHttpClient                   │                     │  ws://0.0.0.0:8484   │
-│      └─ NetSniffInterceptor     │                     │                      │
-│           └─ WebSocketTransport │                     │  Filters, displays   │
-└─────────────────────────────────┘                     └──────────────────────┘
+┌──────────────────────────────────────────┐   WebSocket    ┌───────────────────┐
+│  Mobile App                              │ ─────────────► │  Probe CLI (Rust) │
+│                                          │   JSON events  │                   │
+│  Probe SDK                               │                │  ws://0.0.0.0:8484│
+│   ├── NetworkPlugin (OkHttp interceptor) │                │                   │
+│   ├── DatabasePlugin (future)            │                │  Filter, display  │
+│   ├── PreferencesPlugin (future)         │                │  save to JSONL    │
+│   └── LayoutPlugin (future)              │                └───────────────────┘
+└──────────────────────────────────────────┘
 ```
 
-- **Rust CLI** acts as a WebSocket **server** on port 8484
-- **Android Plugin** is an OkHttp **interceptor** that sends captured requests as JSON via WebSocket
-- The interceptor is non-blocking: captures → queues → background thread sends
-- Designed for extensibility: implement `NetSniffTransport` to add gRPC, file logging, etc.
+- **Rust CLI** is a WebSocket **server** on port 8484
+- **SDK** connects as WebSocket client and forwards plugin events as JSON
+- Non-blocking: capture → queue → background sender thread
+- Plugin-based: each capability (network, db, prefs, layout) is a separate plugin
 
-## Components
+## Repository Structure
 
-| Component | Language | Purpose |
-|-----------|----------|---------|
-| `cli/` | Rust | Terminal UI, WebSocket server, filtering |
-| `android/plugin/` | Kotlin | OkHttp interceptor + WebSocket transport |
-| `android/sample/` | Kotlin + Compose | Demo app using Star Wars API |
+```
+probe/
+├── cli/                         # Rust CLI (WebSocket server + terminal UI)
+├── sdk/
+│   ├── android/                 # Android SDK (Kotlin/Gradle multi-module)
+│   │   ├── core/                # Probe, ProbePlugin, ProbeHost, WebSocketTransport
+│   │   ├── plugin-network/      # OkHttp network interceptor
+│   │   ├── plugin-db/           # SQLite/Room inspector (skeleton)
+│   │   ├── plugin-prefs/        # SharedPreferences inspector (skeleton)
+│   │   ├── plugin-layout/       # Layout inspector (skeleton)
+│   │   └── sample/              # Star Wars API demo app
+│   ├── ios/                     # iOS Swift Package (skeleton)
+│   ├── flutter/                 # Flutter Dart package (skeleton)
+│   └── aurora/                  # AuroraOS C++/Qt (skeleton)
+└── README.md
+```
 
 ## Quick Start
 
@@ -50,44 +63,42 @@ Inspired by [Facebook Flipper](https://github.com/facebook/flipper), NetSniff gi
 cargo build --release
 
 # Run (default port 8484)
-./target/release/netsniff
+./target/release/probe
 
 # With options
-./target/release/netsniff --port 8484 --filter "swapi.dev" --verbose --bodies
+./target/release/probe --port 8484 --filter "swapi" --verbose --bodies
 ```
 
-### 2. Set up ADB connection
+### 2. Set up ADB tunnel (physical device)
 
-**USB-connected device** (recommended):
 ```bash
 adb reverse tcp:8484 tcp:8484
 ```
 
-**Android Emulator**: No setup needed — uses `10.0.2.2` automatically.
-
-**WiFi device**: Update `serverUrl` in `SampleApplication.kt` to your machine's LAN IP.
+**Android Emulator**: No setup needed — uses `ws://10.0.2.2:8484` automatically.
 
 ### 3. Install & run the sample app
 
 ```bash
-cd android
+cd sdk/android
 ./gradlew :sample:installDebug
 ```
 
-Open the app, tap through the tabs — you'll see requests appearing in the CLI.
+Open the app, tap through the People / Films / Planets tabs — requests appear in the CLI.
 
 ## CLI Options
 
 ```
 USAGE:
-    netsniff [OPTIONS]
+    probe [OPTIONS]
 
 OPTIONS:
     -p, --port <PORT>          Port to listen on [default: 8484]
     -f, --filter <PATTERN>     Filter by URL pattern (regex)
     -v, --verbose              Show request and response headers
-    -b, --bodies               Show request and response bodies
+    -b, --bodies               Show request and response bodies (truncated to 4KB)
         --min-size <BYTES>     Only show responses larger than N bytes
+        --save <FILE>          Save all captured transactions to a JSONL file
         --no-color             Disable colored output
     -h, --help                 Print help
     -V, --version              Print version
@@ -95,46 +106,50 @@ OPTIONS:
 
 **Examples:**
 ```bash
-# Only show API calls to a specific domain
-netsniff --filter "api\.example\.com"
+# Watch AI API calls in real-time
+probe --filter "openai\.com|anthropic\.com|claude"
+
+# Save traffic to file for later analysis
+probe --save session.jsonl
+
+# Full verbose with bodies
+probe --verbose --bodies --filter "api\."
 
 # Show only large responses (>10KB)
-netsniff --min-size 10240
-
-# Full verbose mode with bodies
-netsniff --verbose --bodies
-
-# Filter AI API calls
-netsniff --filter "openai\.com|anthropic\.com|claude"
+probe --min-size 10240
 ```
 
-## Using the Plugin in Your App
+## Android Integration
 
-### 1. Add the dependency
-
-The plugin is in `android/plugin/`. To use locally:
+### 1. Add the SDK (local)
 
 ```kotlin
 // settings.gradle.kts
-includeBuild("../path/to/netsniff/android") {
+includeBuild("../path/to/probe/sdk/android") {
     dependencySubstitution {
-        substitute(module("com.netsniff:plugin")).using(project(":plugin"))
+        substitute(module("dev.probe:plugin-network")).using(project(":plugin-network"))
     }
 }
 ```
-
-Or publish to local Maven (see Publishing section).
 
 ### 2. Initialize in Application.onCreate()
 
 ```kotlin
 class MyApp : Application() {
+
+    companion object {
+        val networkPlugin = NetworkPlugin()
+    }
+
     override fun onCreate() {
         super.onCreate()
         if (BuildConfig.DEBUG) {
-            NetSniff.install(
-                NetSniff.Builder(this)
-                    .serverUrl("ws://10.0.2.2:8484") // or localhost with adb reverse
+            val serverUrl = if (isEmulator()) "ws://10.0.2.2:8484" else "ws://localhost:8484"
+            Probe.install(
+                Probe.Builder(this)
+                    .serverUrl(serverUrl)
+                    .plugin(networkPlugin)
+                    // .plugin(DatabasePlugin(db))
                     .build()
             )
         }
@@ -146,93 +161,82 @@ class MyApp : Application() {
 
 ```kotlin
 val client = OkHttpClient.Builder()
-    .addInterceptor(NetSniff.interceptor()) // add LAST for accurate captures
+    .addInterceptor(MyApp.networkPlugin.interceptor())  // add LAST
     .build()
 ```
 
-That's it. Every request through this client is now captured.
-
-## Extensible Transport
-
-Implement `NetSniffTransport` to add custom transports:
+### 4. Dump recent requests (in-memory, no CLI needed)
 
 ```kotlin
-class FileTransport(val file: File) : NetSniffTransport {
-    override fun connect() { /* open file */ }
-    override fun send(transaction: HttpTransaction) { /* append JSON line */ }
-    override fun disconnect() { /* close file */ }
-    override val isConnected = true
-}
-
-// Use it:
-NetSniff.install(
-    NetSniff.Builder(this)
-        .transport(FileTransport(File(filesDir, "traffic.jsonl")))
-        .build()
-)
+val recent: List<HttpTransaction> = MyApp.networkPlugin.dump(last = 50)
 ```
 
-## Message Protocol
+## Plugin System
 
-All messages are JSON sent over WebSocket from plugin → CLI.
+Each `ProbePlugin` gets attached to the `ProbeHost` (transport) and can send arbitrary JSON payloads to the CLI.
+
+```kotlin
+class DatabasePlugin(private val db: SupportSQLiteDatabase) : ProbePlugin {
+    override val id = "database"
+    override val displayName = "Database"
+
+    override fun onAttach(host: ProbeHost) { /* start observing db */ }
+    override fun onDetach() { /* stop */ }
+}
+```
+
+## WebSocket Protocol
 
 ### Hello (on connect)
 ```json
 {
   "type": "hello",
   "clientId": "uuid",
-  "appPackage": "com.example.app",
-  "deviceModel": "Pixel 7",
-  "androidVersion": "14"
+  "appPackage": "dev.myapp",
+  "deviceModel": "Nothing Phone 2",
+  "androidVersion": "15"
 }
 ```
 
-### Transaction (per HTTP request)
+### Event (per plugin event)
 ```json
 {
-  "type": "transaction",
-  "id": "uuid",
+  "type": "event",
+  "plugin": "network",
   "timestamp": 1234567890000,
-  "method": "GET",
-  "url": "https://api.example.com/endpoint",
-  "requestHeaders": {},
-  "requestBody": null,
-  "requestSizeBytes": 0,
-  "responseCode": 200,
-  "responseMessage": "OK",
-  "responseHeaders": {"Content-Type": "application/json"},
-  "responseBody": "{...}",
-  "responseSizeBytes": 1024,
-  "durationMs": 342,
-  "appId": "com.example.app",
-  "error": null
+  "payload": {
+    "id": "uuid",
+    "method": "GET",
+    "url": "https://api.example.com/endpoint",
+    "statusCode": 200,
+    "durationMs": 342,
+    "requestSizeBytes": 0,
+    "responseSizeBytes": 2048
+  }
 }
 ```
+
+## Platform Support
+
+| Platform | Status | Notes |
+|----------|--------|-------|
+| Android  | ✅ Ready | `sdk/android/` — OkHttp interceptor, WebSocket transport |
+| iOS      | 🚧 Skeleton | `sdk/ios/` — Swift Package, contributions welcome |
+| Flutter  | 🚧 Skeleton | `sdk/flutter/` — Dart package, contributions welcome |
+| AuroraOS | 📋 Planned | `sdk/aurora/` — C++/Qt, see README |
 
 ## Sample App
 
-The `android/sample/` module demonstrates the plugin with the [Star Wars API](https://swapi.dev/):
+`sdk/android/sample/` — standalone publishable Android app using [Star Wars API](https://swapi.py4e.com/):
 
 - **People tab** — Characters list (`GET /api/people/`)
 - **Films tab** — All movies sorted by episode (`GET /api/films/`)
 - **Planets tab** — Planets list (`GET /api/planets/`)
-- Refresh button triggers new requests on demand
 
-The sample is a standalone publishable Android app. To publish:
 ```bash
-cd android
-./gradlew :sample:bundleRelease  # creates .aab for Play Store
-./gradlew :sample:assembleRelease  # creates .apk
+# Build release APK
+cd sdk/android && ./gradlew :sample:assembleRelease
 ```
-
-## Future Plans
-
-- [ ] GUI/browser consumer (WebSocket → React frontend)
-- [ ] iOS support (URLSession instrumentation)
-- [ ] Mock response capability (intercept + return custom response)
-- [ ] Request replay
-- [ ] Export to HAR format
-- [ ] gRPC transport support
 
 ## License
 

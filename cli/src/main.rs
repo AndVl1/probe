@@ -9,9 +9,9 @@ use clap::Parser;
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "netsniff",
+    name = "probe",
     version,
-    about = "Android network traffic sniffer for debugging AI agent requests"
+    about = "Plugin-based mobile app inspector. Captures network, database, preferences and more."
 )]
 pub struct Args {
     /// Port to listen on

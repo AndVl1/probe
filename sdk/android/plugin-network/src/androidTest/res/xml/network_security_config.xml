@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Permits cleartext (plain HTTP/WS) traffic to localhost for instrumented tests.
+  MockWebServer binds to localhost and uses http://, so cleartext must be allowed.
+  This config is only included in the androidTest APK, never in production builds.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+    </domain-config>
+</network-security-config>

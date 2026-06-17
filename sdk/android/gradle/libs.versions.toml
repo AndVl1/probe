@@ -12,6 +12,8 @@ appcompat = "1.7.0"
 room = "2.8.4"
 junit = "4.13.2"
 mockk = "1.13.16"
+androidx-test = "1.6.2"
+androidx-test-ext = "1.2.1"
 
 [libraries]
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
@@ -33,6 +35,8 @@ lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-ru
 room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
 room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
 appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
+androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidx-test" }
+androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidx-test-ext" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

@@ -3,6 +3,11 @@ name = "probe"
 version = "0.1.0"
 edition = "2021"
 description = "Plugin-based mobile app inspector for debugging AI agents — CLI tool"
+authors = ["Andrey Vladislavov <and.vladislavov@gmail.com>"]
+license = "MIT"
+repository = "https://github.com/AndVl1/probe"
+keywords = ["debugging", "network", "inspector", "mobile"]
+categories = ["development-tools::debugging", "command-line-utilities"]
 
 [[bin]]
 name = "probe"

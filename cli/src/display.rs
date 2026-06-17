@@ -1,6 +1,7 @@
 use colored::Colorize;
 use std::time::{SystemTime, UNIX_EPOCH};
-use crate::protocol::{HelloMessage, HttpTransaction};
+use crate::protocol::HelloMessage;
+use crate::protocol::HttpTransaction;
 
 pub struct Displayer {
     pub verbose: bool,
@@ -20,10 +21,10 @@ impl Displayer {
     pub fn print_startup_banner(&self, port: u16) {
         let version = env!("CARGO_PKG_VERSION");
         let title = format!("  Probe v{}  •  Listening on :{}       ", version, port);
-        let waiting = "  Waiting for Android plugin connection...     ";
+        let waiting = "  Waiting for mobile app connection...        ";
 
-        // Determine width based on longest line
-        let width = title.len().max(waiting.len());
+        // Determine width based on longest line (char count, not bytes, for Unicode safety)
+        let width = title.chars().count().max(waiting.chars().count());
         let bar = "═".repeat(width);
 
         println!("╔{}╗", bar);
@@ -34,12 +35,7 @@ impl Displayer {
 
     pub fn print_connected(&self, hello: &HelloMessage) {
         let ts = current_timestamp();
-        let line = format!(
-            "[{}] Connected: {} ({}, Android {})",
-            ts, hello.app_package, hello.device_model, hello.android_version
-        );
-        println!("{} {}", ts_dim(&ts), format_connected_body(&hello.app_package, &hello.device_model, &hello.android_version));
-        let _ = line;
+        println!("{} {}", ts_dim(&ts), format_connected_body(hello));
     }
 
     pub fn print_disconnected(&self, app_package: &str) {
@@ -144,10 +140,14 @@ fn ts_dim(ts: &str) -> String {
     format!("[{}]", ts).dimmed().to_string()
 }
 
-fn format_connected_body(app_package: &str, device_model: &str, android_version: &str) -> String {
+fn format_connected_body(hello: &HelloMessage) -> String {
+    let platform = hello.platform.as_deref().unwrap_or("unknown");
+    let os_ver = hello.android_version.as_deref()
+        .or(hello.os_version.as_deref())
+        .unwrap_or("?");
     format!(
-        "Connected: {} ({}, Android {})",
-        app_package, device_model, android_version
+        "Connected: {} ({}, {} {})",
+        hello.app_package, hello.device_model, platform, os_ver
     )
 }
 
@@ -199,9 +199,10 @@ fn truncate(s: &str, max_chars: usize) -> String {
 }
 
 fn pad_right(s: &str, width: usize) -> String {
-    if s.len() >= width {
+    let char_count = s.chars().count();
+    if char_count >= width {
         s.to_string()
     } else {
-        format!("{}{}", s, " ".repeat(width - s.len()))
+        format!("{}{}", s, " ".repeat(width - char_count))
     }
 }

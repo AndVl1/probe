@@ -1,5 +1,7 @@
 # Probe
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A plugin-based mobile app inspector — built for debugging AI agent HTTP requests and more.
 
 Inspired by [Facebook Flipper](https://github.com/facebook/flipper), Probe gives you real-time visibility into your mobile app via a beautiful terminal UI.
@@ -44,32 +46,44 @@ probe/
 │   ├── android/                 # Android SDK (Kotlin/Gradle multi-module)
 │   │   ├── core/                # Probe, ProbePlugin, ProbeHost, WebSocketTransport
 │   │   ├── plugin-network/      # OkHttp network interceptor
-│   │   ├── plugin-db/           # SQLite/Room inspector (skeleton)
-│   │   ├── plugin-prefs/        # SharedPreferences inspector (skeleton)
-│   │   ├── plugin-layout/       # Layout inspector (skeleton)
+│   │   ├── plugin-db/           # SQLite/Room inspector (stub)
+│   │   ├── plugin-prefs/        # SharedPreferences inspector (stub)
+│   │   ├── plugin-layout/       # Layout inspector (stub)
 │   │   └── sample/              # Star Wars API demo app
-│   ├── ios/                     # iOS Swift Package (skeleton)
-│   ├── flutter/                 # Flutter Dart package (skeleton)
-│   └── aurora/                  # AuroraOS C++/Qt (skeleton)
+│   ├── ios/                     # iOS Swift Package (stub — no transport yet)
+│   ├── flutter/                 # Flutter Dart package (deferred)
+│   └── aurora/                  # AuroraOS C++/Qt (deferred)
 └── README.md
 ```
 
 ## Quick Start
 
-### 1. Start the CLI
+### 1. Install or build the CLI
+
+**Build from source:**
 
 ```bash
-# Build
 cargo build --release
+./target/release/probe
+```
 
-# Run (default port 8484)
+**Homebrew (formula coming soon):**
+
+```bash
+# brew install probe   ← not yet published; build from source for now
+```
+
+### 2. Start the CLI
+
+```bash
+# Default port 8484
 ./target/release/probe
 
 # With options
 ./target/release/probe --port 8484 --filter "swapi" --verbose --bodies
 ```
 
-### 2. Set up ADB tunnel (physical device)
+### 3. Set up ADB tunnel (physical device)
 
 ```bash
 adb reverse tcp:8484 tcp:8484
@@ -77,7 +91,7 @@ adb reverse tcp:8484 tcp:8484
 
 **Android Emulator**: No setup needed — uses `ws://10.0.2.2:8484` automatically.
 
-### 3. Install & run the sample app
+### 4. Install & run the sample app
 
 ```bash
 cd sdk/android
@@ -220,10 +234,28 @@ class DatabasePlugin(private val db: SupportSQLiteDatabase) : ProbePlugin {
 
 | Platform | Status | Notes |
 |----------|--------|-------|
-| Android  | ✅ Ready | `sdk/android/` — OkHttp interceptor, WebSocket transport |
-| iOS      | 🚧 Skeleton | `sdk/ios/` — Swift Package, contributions welcome |
-| Flutter  | 🚧 Skeleton | `sdk/flutter/` — Dart package, contributions welcome |
-| AuroraOS | 📋 Planned | `sdk/aurora/` — C++/Qt, see README |
+| Android  | ✅ Ready | `sdk/android/` — OkHttp interceptor, WebSocket transport, in-memory dump |
+| iOS      | 🔧 Stub | `sdk/ios/` — Swift Package with protocol definitions and data models; no WebSocket transport yet |
+| Flutter  | ⏸ Deferred | `sdk/flutter/` — not under active development |
+| AuroraOS | ⏸ Deferred | `sdk/aurora/` — not under active development |
+
+### Contributing a new SDK
+
+The protocol is simple and unidirectional (SDK → CLI). To add a new platform:
+1. Implement `ProbePlugin` and `ProbeHost` interfaces
+2. Build a WebSocket client that sends the `hello` handshake on connect
+3. Forward plugin events as `event` messages (see [WebSocket Protocol](#websocket-protocol))
+
+## Distribution
+
+| Component | Status |
+|-----------|--------|
+| Rust CLI binary | Build from source (`cargo build --release`) |
+| Homebrew formula | Planned — not yet published |
+| Android SDK (Maven) | Planned — not yet published to Maven Central |
+| iOS Swift Package | Available via local path; not yet on Swift Package Index |
+
+The project is pre-1.0. APIs and protocol may change before a stable release.
 
 ## Sample App
 
@@ -240,4 +272,4 @@ cd sdk/android && ./gradlew :sample:assembleRelease
 
 ## License
 
-MIT
+[MIT](LICENSE) — Copyright (c) 2024-2026 Andrey Vladislavov

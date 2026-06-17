@@ -18,9 +18,10 @@ internal class NetworkInterceptor(
         val requestBody: String?
         val requestSizeBytes: Long
 
-        if (request.body != null) {
+        val reqBody = request.body
+        if (reqBody != null) {
             val buffer = Buffer()
-            request.body!!.writeTo(buffer)
+            reqBody.writeTo(buffer)
             requestSizeBytes = buffer.size
             requestBody = if (requestSizeBytes <= maxBodySize) buffer.readUtf8()
             else "[body too large: $requestSizeBytes bytes]"

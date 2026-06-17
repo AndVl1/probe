@@ -29,7 +29,7 @@ impl TransactionBuffer {
     }
 
     pub fn push(&self, value: serde_json::Value) {
-        let mut buf = self.inner.lock().unwrap();
+        let mut buf = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if buf.len() >= self.capacity {
             buf.pop_front();
         }
@@ -39,7 +39,7 @@ impl TransactionBuffer {
     /// Returns last `n` transactions as JSONL string
     #[allow(dead_code)]
     pub fn dump_last(&self, n: usize) -> String {
-        let buf = self.inner.lock().unwrap();
+        let buf = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let skip = buf.len().saturating_sub(n);
         buf.iter()
             .skip(skip)
@@ -62,15 +62,17 @@ pub async fn run_server(args: Arc<Args>) -> Result<()> {
     let buffer = Arc::new(TransactionBuffer::new(1000));
 
     // Optional JSONL save file — opened once, shared across connections
-    let save_file: Option<Arc<Mutex<std::fs::File>>> = args.save.as_ref().map(|path| {
+    let save_file: Option<Arc<Mutex<std::fs::File>>> = if let Some(path) = args.save.as_ref() {
         let file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)
-            .expect("Failed to open save file");
+            .map_err(|e| anyhow::anyhow!("Failed to open save file '{}': {}", path.display(), e))?;
         println!("Saving transactions to: {}", path.display());
-        Arc::new(Mutex::new(file))
-    });
+        Some(Arc::new(Mutex::new(file)))
+    } else {
+        None
+    };
 
     loop {
         match listener.accept().await {
@@ -154,6 +156,32 @@ async fn handle_connection(
                 // Only display if passes filter
                 if filter.matches(&tx) {
                     displayer.print_transaction(&tx);
+                }
+            }
+            Ok(Message::Event(event)) => {
+                if event.plugin == "network" {
+                    // Store the full raw envelope in the ring buffer
+                    if let Ok(raw) = serde_json::from_str::<serde_json::Value>(&text) {
+                        buffer.push(raw.clone());
+                        if let Some(ref file_mutex) = save_file {
+                            if let Ok(mut file) = file_mutex.lock() {
+                                let _ = writeln!(file, "{}", raw);
+                            }
+                        }
+                    }
+                    // Extract HttpTransaction from payload for filtering and display
+                    match serde_json::from_value::<crate::protocol::HttpTransaction>(event.payload) {
+                        Ok(tx) => {
+                            if filter.matches(&tx) {
+                                displayer.print_transaction(&tx);
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to parse network payload as HttpTransaction: {}", e);
+                        }
+                    }
+                } else {
+                    info!("Received event for unknown plugin: {}", event.plugin);
                 }
             }
             Err(e) => {

@@ -130,7 +130,7 @@ pub async fn handle_connection(
     while let Some(msg_result) = read.next().await {
         let text = match msg_result {
             Ok(WsMessage::Text(t)) => t,
-            Ok(WsMessage::Binary(data)) => match String::from_utf8(data.into()) {
+            Ok(WsMessage::Binary(data)) => match String::from_utf8(data) {
                 Ok(t) => t,
                 Err(_) => { warn!("Received non-UTF8 binary message, ignoring"); continue; }
             },

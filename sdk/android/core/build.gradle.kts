@@ -20,4 +20,6 @@ android {
 dependencies {
     implementation(libs.gson)
     implementation(libs.okhttp)
+    testImplementation(libs.junit)
+    testImplementation(libs.mockk)
 }

@@ -1,5 +1,6 @@
 # Probe
 
+[![CI](https://github.com/AndVl1/probe/actions/workflows/ci.yml/badge.svg)](https://github.com/AndVl1/probe/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A plugin-based mobile app inspector — built for debugging AI agent HTTP requests and more.

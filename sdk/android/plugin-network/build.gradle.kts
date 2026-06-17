@@ -21,4 +21,7 @@ dependencies {
     api(project(":core"))
     api(libs.okhttp)
     implementation(libs.gson)
+    testImplementation(libs.junit)
+    testImplementation(libs.mockk)
+    testImplementation(libs.mockwebserver)
 }

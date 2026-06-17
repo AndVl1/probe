@@ -36,8 +36,17 @@ impl TransactionBuffer {
         buf.push_back(value);
     }
 
+    /// Returns the current number of transactions in the buffer.
+    pub fn len(&self) -> usize {
+        let buf = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        buf.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Returns last `n` transactions as JSONL string
-    #[allow(dead_code)]
     pub fn dump_last(&self, n: usize) -> String {
         let buf = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let skip = buf.len().saturating_sub(n);
@@ -105,7 +114,7 @@ pub async fn run_server(args: Arc<Args>) -> Result<()> {
     }
 }
 
-async fn handle_connection(
+pub async fn handle_connection(
     stream: TcpStream,
     _args: Arc<Args>,
     displayer: Arc<Displayer>,
@@ -195,4 +204,93 @@ async fn handle_connection(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── TransactionBuffer::new ────────────────────────────────────────────────
+
+    #[test]
+    fn buffer_new_starts_empty() {
+        let buf = TransactionBuffer::new(10);
+        assert_eq!(buf.len(), 0);
+        assert!(buf.is_empty());
+    }
+
+    // ── TransactionBuffer capacity / eviction ─────────────────────────────────
+
+    #[test]
+    fn buffer_evicts_oldest_when_full() {
+        let buf = TransactionBuffer::new(3);
+        for i in 1..=5 {
+            buf.push(serde_json::json!({"n": i}));
+        }
+        assert_eq!(buf.len(), 3);
+
+        let dump = buf.dump_last(10);
+        // items 1 and 2 should be gone; 3, 4, 5 should remain
+        assert!(!dump.contains("\"n\":1"), "item 1 should have been evicted");
+        assert!(!dump.contains("\"n\":2"), "item 2 should have been evicted");
+        assert!(dump.contains("\"n\":3"));
+        assert!(dump.contains("\"n\":4"));
+        assert!(dump.contains("\"n\":5"));
+    }
+
+    #[test]
+    fn buffer_fifo_eviction_oldest_removed_first() {
+        let buf = TransactionBuffer::new(2);
+        buf.push(serde_json::json!({"seq": "first"}));
+        buf.push(serde_json::json!({"seq": "second"}));
+        buf.push(serde_json::json!({"seq": "third"}));
+
+        let dump = buf.dump_last(10);
+        assert!(!dump.contains("\"first\""), "first item should be evicted");
+        assert!(dump.contains("\"second\""));
+        assert!(dump.contains("\"third\""));
+    }
+
+    // ── TransactionBuffer::dump_last ──────────────────────────────────────────
+
+    #[test]
+    fn dump_last_returns_requested_count() {
+        let buf = TransactionBuffer::new(10);
+        for i in 1..=5 {
+            buf.push(serde_json::json!({"n": i}));
+        }
+
+        let dump = buf.dump_last(2);
+        let lines: Vec<&str> = dump.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(dump.contains("\"n\":4"));
+        assert!(dump.contains("\"n\":5"));
+        assert!(!dump.contains("\"n\":3"));
+    }
+
+    #[test]
+    fn dump_last_more_than_available_returns_all() {
+        let buf = TransactionBuffer::new(10);
+        buf.push(serde_json::json!({"x": 1}));
+        buf.push(serde_json::json!({"x": 2}));
+
+        let dump = buf.dump_last(100);
+        let lines: Vec<&str> = dump.lines().collect();
+        assert_eq!(lines.len(), 2);
+    }
+
+    #[test]
+    fn dump_last_zero_returns_empty_string() {
+        let buf = TransactionBuffer::new(10);
+        buf.push(serde_json::json!({"x": 1}));
+
+        let dump = buf.dump_last(0);
+        assert_eq!(dump, "");
+    }
+
+    #[test]
+    fn dump_last_on_empty_buffer_returns_empty_string() {
+        let buf = TransactionBuffer::new(10);
+        assert_eq!(buf.dump_last(5), "");
+    }
 }

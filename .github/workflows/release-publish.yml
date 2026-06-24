@@ -1,0 +1,159 @@
+name: Publish Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(cat VERSION)
+          echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Publishing candidate: v${VERSION}"
+
+      - name: Check if tag already exists
+        id: tag_check
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          if git tag --list "v${VERSION}" | grep -q "v${VERSION}"; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag v${VERSION} already exists — skipping publish (idempotent run)."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── Rust ─────────────────────────────────────────────────────────────────
+
+      - name: Set up Rust
+        if: steps.tag_check.outputs.exists == 'false'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        if: steps.tag_check.outputs.exists == 'false'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "cli -> cli/target"
+
+      - name: Run Rust tests
+        if: steps.tag_check.outputs.exists == 'false'
+        run: cargo test --workspace
+
+      # ── Android ──────────────────────────────────────────────────────────────
+
+      - name: Set up JDK 17
+        if: steps.tag_check.outputs.exists == 'false'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Gradle
+        if: steps.tag_check.outputs.exists == 'false'
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build, test and validate Android SDK API
+        if: steps.tag_check.outputs.exists == 'false'
+        working-directory: sdk/android
+        run: ./gradlew build test apiCheck
+        # Note: apiCheck requires the Kotlin Binary Compatibility Validator plugin
+        # to be configured and .api files to be committed. Run ./gradlew apiDump
+        # to generate initial .api files if this task fails.
+
+      # ── GPG signing setup ─────────────────────────────────────────────────
+      # Uses Gradle's default signing provider (keyring-based).
+      # GPG_PRIVATE_KEY must be stored as a base64-encoded ASCII-armored key.
+      # To prepare the secret:
+      #   gpg --export-secret-keys --armor KEY_ID | base64
+      # ─────────────────────────────────────────────────────────────────────
+
+      - name: Import GPG key and configure Gradle signing
+        if: steps.tag_check.outputs.exists == 'false'
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          echo "$GPG_PRIVATE_KEY" | base64 -d | gpg --batch --import
+
+          # Export for Gradle's legacy keyring signing provider
+          gpg --export-secret-keys --batch --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" > ~/.gnupg/secring.gpg
+
+          KEY_ID=$(gpg --list-secret-keys --keyid-format short \
+            | grep 'sec' | awk '{print $2}' | cut -d'/' -f2 | head -n1)
+
+          # Append signing config to sdk/android/gradle.properties
+          # (file is not committed; written only for this CI run)
+          {
+            echo "signing.keyId=${KEY_ID}"
+            echo "signing.password=${GPG_PASSPHRASE}"
+            echo "signing.secretKeyRingFile=${HOME}/.gnupg/secring.gpg"
+          } >> sdk/android/gradle.properties
+
+      # ── Publish ───────────────────────────────────────────────────────────
+      # ORG_GRADLE_PROJECT_ prefix exposes env vars as Gradle project properties,
+      # matching findProperty("ossrhUsername") calls in build.gradle.kts.
+      # ─────────────────────────────────────────────────────────────────────
+
+      - name: Publish Android SDK to Maven Central
+        if: steps.tag_check.outputs.exists == 'false'
+        working-directory: sdk/android
+        env:
+          ORG_GRADLE_PROJECT_ossrhUsername: ${{ secrets.OSSRH_USERNAME }}
+          ORG_GRADLE_PROJECT_ossrhPassword: ${{ secrets.OSSRH_PASSWORD }}
+        run: ./gradlew publishAllPublicationsToSonatypeRepository -Prelease=true
+
+      # ── Tag and release ───────────────────────────────────────────────────
+
+      - name: Configure git
+        if: steps.tag_check.outputs.exists == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Create and push git tag
+        if: steps.tag_check.outputs.exists == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          git tag "v${VERSION}"
+          git push origin "v${VERSION}"
+
+      - name: Create GitHub Release
+        if: steps.tag_check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
+            --generate-notes
+
+      # ── Rust binary asset ─────────────────────────────────────────────────
+
+      - name: Build Rust release binary
+        if: steps.tag_check.outputs.exists == 'false'
+        run: cargo build --release --manifest-path cli/Cargo.toml
+
+      - name: Upload binary to GitHub Release
+        if: steps.tag_check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          ASSET_NAME="devlens-v${VERSION}-linux-x86_64"
+          cp cli/target/release/devlens "$ASSET_NAME"
+          gh release upload "v${VERSION}" "$ASSET_NAME"

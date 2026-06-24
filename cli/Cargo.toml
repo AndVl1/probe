@@ -1,11 +1,16 @@
 [package]
-name = "probe"
+name = "devlens"
 version = "0.1.0"
 edition = "2021"
-description = "Plugin-based mobile app inspector for debugging AI agents — CLI tool"
+description = "DevLens — plugin-based mobile app inspector for debugging AI agents, CLI tool"
+authors = ["Andrey Vladislavov <and.vladislavov@gmail.com>"]
+license = "MIT"
+repository = "https://github.com/AndVl1/probe"
+keywords = ["debugging", "network", "inspector", "mobile"]
+categories = ["development-tools::debugging", "command-line-utilities"]
 
 [[bin]]
-name = "probe"
+name = "devlens"
 path = "src/main.rs"
 
 [dependencies]
@@ -20,3 +25,6 @@ regex = "1"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "3"

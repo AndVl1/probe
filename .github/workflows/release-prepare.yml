@@ -1,0 +1,176 @@
+name: Prepare Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_override:
+        description: 'Force version bump type (leave empty for auto-detect via BCV)'
+        required: false
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout develop
+        uses: actions/checkout@v4
+        with:
+          ref: develop
+          fetch-depth: 0
+
+      - name: Determine new version
+        id: version
+        env:
+          BUMP_OVERRIDE: ${{ inputs.bump_override }}
+        run: |
+          CURRENT_VERSION=$(cat VERSION)
+          MAJOR=$(echo "$CURRENT_VERSION" | cut -d. -f1)
+          MINOR=$(echo "$CURRENT_VERSION" | cut -d. -f2)
+          PATCH=$(echo "$CURRENT_VERSION" | cut -d. -f3)
+
+          BUMP="${BUMP_OVERRIDE:-auto}"
+
+          if [[ "$BUMP" == "auto" ]]; then
+            if [[ -x scripts/determine-version.sh ]]; then
+              NEW_VERSION=$(bash scripts/determine-version.sh)
+            else
+              echo "::error::scripts/determine-version.sh not found and bump_override is 'auto'."
+              echo "::error::Either create scripts/determine-version.sh (BCV-based detection) or select a bump type."
+              exit 1
+            fi
+          else
+            case "$BUMP" in
+              patch) NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))" ;;
+              minor) NEW_VERSION="${MAJOR}.$((MINOR + 1)).0" ;;
+              major) NEW_VERSION="$((MAJOR + 1)).0.0" ;;
+              *) echo "::error::Unknown bump type: $BUMP"; exit 1 ;;
+            esac
+          fi
+
+          echo "current=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "new=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Bumping version: ${CURRENT_VERSION} → ${NEW_VERSION} (bump: ${BUMP})"
+
+      - name: Check release branch does not already exist
+        env:
+          NEW_VERSION: ${{ steps.version.outputs.new }}
+        run: |
+          BRANCH="release/v${NEW_VERSION}"
+          if git ls-remote --exit-code origin "refs/heads/${BRANCH}" > /dev/null 2>&1; then
+            echo "::error::Branch ${BRANCH} already exists on origin. Delete it or choose a different bump type."
+            exit 1
+          fi
+
+      - name: Create release branch
+        env:
+          NEW_VERSION: ${{ steps.version.outputs.new }}
+        run: |
+          git checkout -b "release/v${NEW_VERSION}"
+
+      - name: Update VERSION file
+        env:
+          NEW_VERSION: ${{ steps.version.outputs.new }}
+        run: |
+          echo "${NEW_VERSION}" > VERSION
+
+      - name: Update cli/Cargo.toml version
+        env:
+          NEW_VERSION: ${{ steps.version.outputs.new }}
+        run: |
+          # Replace only the first occurrence of version = "..." in cli/Cargo.toml
+          # (0,/pattern/ is GNU sed: starts match range from before line 1)
+          sed -i "0,/^version = \"[^\"]*\"/s//version = \"${NEW_VERSION}\"/" cli/Cargo.toml
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Regenerate Cargo.lock
+        run: |
+          # Regenerating lock file after Cargo.toml version change
+          cargo metadata --format-version 1 > /dev/null
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Commit version bump
+        env:
+          NEW_VERSION: ${{ steps.version.outputs.new }}
+        run: |
+          git add VERSION cli/Cargo.toml Cargo.lock
+          git commit -m "chore: bump version to ${NEW_VERSION}"
+
+      - name: Push release branch
+        env:
+          NEW_VERSION: ${{ steps.version.outputs.new }}
+        run: |
+          git push origin "release/v${NEW_VERSION}"
+
+      - name: Build changelog
+        id: changelog
+        env:
+          NEW_VERSION: ${{ steps.version.outputs.new }}
+        run: |
+          LAST_TAG=$(git tag --sort=-version:refname | grep "^v" | head -n1)
+          if [[ -n "$LAST_TAG" ]]; then
+            CHANGES=$(git log "${LAST_TAG}..HEAD" --oneline --no-merges | head -50)
+          else
+            CHANGES=$(git log --oneline --no-merges | head -50)
+          fi
+
+          # Multiline output via GitHub Actions delimiter
+          EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
+          echo "changes<<${EOF}" >> "$GITHUB_OUTPUT"
+          echo "$CHANGES" >> "$GITHUB_OUTPUT"
+          echo "${EOF}" >> "$GITHUB_OUTPUT"
+
+      - name: Create pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_VERSION: ${{ steps.version.outputs.new }}
+          CURRENT_VERSION: ${{ steps.version.outputs.current }}
+          BUMP: ${{ inputs.bump_override }}
+          CHANGES: ${{ steps.changelog.outputs.changes }}
+        run: |
+          gh pr create \
+            --base main \
+            --head "release/v${NEW_VERSION}" \
+            --title "Release v${NEW_VERSION}" \
+            --body "## Release v${NEW_VERSION}
+
+          **Version bump**: \`${CURRENT_VERSION}\` → \`${NEW_VERSION}\` (type: \`${BUMP:-auto}\`)
+
+          ## Changelog
+
+          Commits since last release tag:
+
+          \`\`\`
+          ${CHANGES}
+          \`\`\`
+
+          ## Checklist before merging
+
+          - [ ] Verify CHANGELOG / release notes are accurate
+          - [ ] Confirm API surface is intentional (run \`apiCheck\` locally)
+          - [ ] Confirm secrets are configured in repository settings
+
+          ## Required secrets (one-time setup)
+
+          | Secret | Purpose |
+          |--------|---------|
+          | \`OSSRH_USERNAME\` | Sonatype Central username |
+          | \`OSSRH_PASSWORD\` | Sonatype Central token |
+          | \`GPG_PRIVATE_KEY\` | Base64-encoded ASCII-armored GPG private key |
+          | \`GPG_PASSPHRASE\` | GPG key passphrase |
+
+          Merging this PR to \`main\` will trigger the **Publish Release** workflow automatically."

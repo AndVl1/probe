@@ -1,15 +1,14 @@
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
 }
 
 android {
-    namespace = "dev.probe.sample"
-    compileSdk = 35
+    namespace = "tech.devlens.sample"
+    compileSdk = 36
 
     defaultConfig {
-        applicationId = "dev.probe.sample"
+        applicationId = "tech.devlens.sample"
         minSdk = 24
         targetSdk = 35
         versionCode = 1
@@ -31,12 +30,9 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

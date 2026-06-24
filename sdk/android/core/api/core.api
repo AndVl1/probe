@@ -1,0 +1,77 @@
+public final class tech/devlens/Platform : java/lang/Enum {
+	public static final field ANDROID Ltech/devlens/Platform;
+	public static final field AURORA Ltech/devlens/Platform;
+	public static final field Companion Ltech/devlens/Platform$Companion;
+	public static final field FLUTTER Ltech/devlens/Platform;
+	public static final field IOS Ltech/devlens/Platform;
+	public static fun getEntries ()Lkotlin/enums/EnumEntries;
+	public static fun valueOf (Ljava/lang/String;)Ltech/devlens/Platform;
+	public static fun values ()[Ltech/devlens/Platform;
+}
+
+public final class tech/devlens/Platform$Companion {
+	public final fun getALL ()Ljava/util/Set;
+}
+
+public final class tech/devlens/Probe : tech/devlens/ProbeHost {
+	public static final field Companion Ltech/devlens/Probe$Companion;
+	public synthetic fun <init> (Ltech/devlens/transport/ProbeTransport;Ljava/util/List;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun isConnected ()Z
+	public fun send (Ljava/lang/String;Ljava/util/Map;)V
+}
+
+public final class tech/devlens/Probe$Builder {
+	public fun <init> (Landroid/content/Context;)V
+	public final fun build ()Ltech/devlens/Probe;
+	public final fun plugin (Ltech/devlens/ProbePlugin;)Ltech/devlens/Probe$Builder;
+	public final fun serverUrl (Ljava/lang/String;)Ltech/devlens/Probe$Builder;
+	public final fun transport (Ltech/devlens/transport/ProbeTransport;)Ltech/devlens/Probe$Builder;
+}
+
+public final class tech/devlens/Probe$Companion {
+	public final fun host ()Ltech/devlens/ProbeHost;
+	public final fun install (Ltech/devlens/Probe;)V
+	public final fun uninstall ()V
+}
+
+public abstract interface class tech/devlens/ProbeHost {
+	public abstract fun isConnected ()Z
+	public abstract fun send (Ljava/lang/String;Ljava/util/Map;)V
+}
+
+public abstract interface class tech/devlens/ProbePlugin {
+	public abstract fun getDisplayName ()Ljava/lang/String;
+	public abstract fun getId ()Ljava/lang/String;
+	public fun getSupportedPlatforms ()Ljava/util/Set;
+	public abstract fun onAttach (Ltech/devlens/ProbeHost;)V
+	public abstract fun onDetach ()V
+}
+
+public final class tech/devlens/ProbePlugin$DefaultImpls {
+	public static fun getSupportedPlatforms (Ltech/devlens/ProbePlugin;)Ljava/util/Set;
+}
+
+public final class tech/devlens/R {
+}
+
+public abstract interface class tech/devlens/transport/ProbeTransport {
+	public abstract fun connect ()V
+	public abstract fun disconnect ()V
+	public abstract fun isConnected ()Z
+	public abstract fun send (Ljava/lang/String;Ljava/util/Map;)V
+}
+
+public final class tech/devlens/transport/WebSocketTransport : tech/devlens/transport/ProbeTransport {
+	public static final field Companion Ltech/devlens/transport/WebSocketTransport$Companion;
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;Lokhttp3/OkHttpClient;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;Lokhttp3/OkHttpClient;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun connect ()V
+	public fun disconnect ()V
+	public fun isConnected ()Z
+	public fun send (Ljava/lang/String;Ljava/util/Map;)V
+}
+
+public final class tech/devlens/transport/WebSocketTransport$Companion {
+	public final fun defaultDeviceInfo ()Ljava/util/Map;
+}
+

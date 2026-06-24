@@ -1,8 +1,8 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 import PackageDescription
 
 let package = Package(
-    name: "Probe",
+    name: "DevLens",
     platforms: [.iOS(.v14), .macOS(.v12)],
     products: [
         .library(name: "ProbeCore", targets: ["ProbeCore"]),

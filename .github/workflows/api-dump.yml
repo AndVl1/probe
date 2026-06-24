@@ -1,0 +1,47 @@
+name: Regenerate API dump
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'sdk/android/*/src/main/**'
+
+permissions:
+  contents: write
+
+jobs:
+  api-dump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Regenerate .api files
+        working-directory: sdk/android
+        run: ./gradlew apiDump
+
+      - name: Check for changes
+        id: diff
+        run: |
+          if git diff --quiet -- '*/api/*.api'; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit updated .api files
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add '*/api/*.api'
+          git commit -m "chore: regenerate BCV api dump"
+          git push

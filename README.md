@@ -1,16 +1,19 @@
-# Probe
+# DevLens
+
+[![CI](https://github.com/AndVl1/probe/actions/workflows/ci.yml/badge.svg)](https://github.com/AndVl1/probe/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A plugin-based mobile app inspector — built for debugging AI agent HTTP requests and more.
 
-Inspired by [Facebook Flipper](https://github.com/facebook/flipper), Probe gives you real-time visibility into your mobile app via a beautiful terminal UI.
+Inspired by [Facebook Flipper](https://github.com/facebook/flipper), DevLens gives you real-time visibility into your mobile app via a beautiful terminal UI.
 
 ```
 ╔═══════════════════════════════════════════════════╗
-║  Probe v0.1.0  •  Listening on :8484              ║
+║  DevLens v0.1.0  •  Listening on :8484            ║
 ║  Waiting for plugin connection...                  ║
 ╚═══════════════════════════════════════════════════╝
 
-[12:34:56] 📱 Connected: dev.probe.sample (Nothing Phone 2, Android 15)
+[12:34:56] 📱 Connected: tech.devlens.sample (Nothing Phone 2, Android 15)
 [12:34:57] ● GET    https://swapi.py4e.com/api/people/   200  342ms  2.1KB
 [12:34:58] ● GET    https://swapi.py4e.com/api/films/    200  880ms  8.4KB
 [12:34:59] ● GET    https://swapi.py4e.com/api/planets/  200  456ms  3.7KB
@@ -19,18 +22,18 @@ Inspired by [Facebook Flipper](https://github.com/facebook/flipper), Probe gives
 ## Architecture
 
 ```
-┌──────────────────────────────────────────┐   WebSocket    ┌───────────────────┐
-│  Mobile App                              │ ─────────────► │  Probe CLI (Rust) │
-│                                          │   JSON events  │                   │
-│  Probe SDK                               │                │  ws://0.0.0.0:8484│
-│   ├── NetworkPlugin (OkHttp interceptor) │                │                   │
-│   ├── DatabasePlugin (future)            │                │  Filter, display  │
-│   ├── PreferencesPlugin (future)         │                │  save to JSONL    │
-│   └── LayoutPlugin (future)              │                └───────────────────┘
+┌──────────────────────────────────────────┐   WebSocket    ┌──────────────────────┐
+│  Mobile App                              │ ─────────────► │  DevLens CLI (Rust)  │
+│                                          │   JSON events  │                      │
+│  DevLens SDK                             │                │  ws://0.0.0.0:8484   │
+│   ├── NetworkPlugin (OkHttp interceptor) │                │                      │
+│   ├── DatabasePlugin (future)            │                │  Filter, display     │
+│   ├── PreferencesPlugin (future)         │                │  save to JSONL       │
+│   └── LayoutPlugin (future)              │                └──────────────────────┘
 └──────────────────────────────────────────┘
 ```
 
-- **Rust CLI** is a WebSocket **server** on port 8484
+- **DevLens CLI** (Rust) is a WebSocket **server** on port 8484
 - **SDK** connects as WebSocket client and forwards plugin events as JSON
 - Non-blocking: capture → queue → background sender thread
 - Plugin-based: each capability (network, db, prefs, layout) is a separate plugin
@@ -39,37 +42,49 @@ Inspired by [Facebook Flipper](https://github.com/facebook/flipper), Probe gives
 
 ```
 probe/
-├── cli/                         # Rust CLI (WebSocket server + terminal UI)
+├── cli/                         # DevLens CLI (WebSocket server + terminal UI)
 ├── sdk/
 │   ├── android/                 # Android SDK (Kotlin/Gradle multi-module)
 │   │   ├── core/                # Probe, ProbePlugin, ProbeHost, WebSocketTransport
 │   │   ├── plugin-network/      # OkHttp network interceptor
-│   │   ├── plugin-db/           # SQLite/Room inspector (skeleton)
-│   │   ├── plugin-prefs/        # SharedPreferences inspector (skeleton)
-│   │   ├── plugin-layout/       # Layout inspector (skeleton)
+│   │   ├── plugin-db/           # SQLite/Room inspector (stub)
+│   │   ├── plugin-prefs/        # SharedPreferences inspector (stub)
+│   │   ├── plugin-layout/       # Layout inspector (stub)
 │   │   └── sample/              # Star Wars API demo app
-│   ├── ios/                     # iOS Swift Package (skeleton)
-│   ├── flutter/                 # Flutter Dart package (skeleton)
-│   └── aurora/                  # AuroraOS C++/Qt (skeleton)
+│   ├── ios/                     # iOS Swift Package (stub — no transport yet)
+│   ├── flutter/                 # Flutter Dart package (deferred)
+│   └── aurora/                  # AuroraOS C++/Qt (deferred)
 └── README.md
 ```
 
 ## Quick Start
 
-### 1. Start the CLI
+### 1. Install or build the CLI
+
+**Build from source:**
 
 ```bash
-# Build
 cargo build --release
-
-# Run (default port 8484)
-./target/release/probe
-
-# With options
-./target/release/probe --port 8484 --filter "swapi" --verbose --bodies
+./target/release/devlens
 ```
 
-### 2. Set up ADB tunnel (physical device)
+**Homebrew (formula coming soon):**
+
+```bash
+# brew install devlens   ← not yet published; build from source for now
+```
+
+### 2. Start the CLI
+
+```bash
+# Default port 8484
+./target/release/devlens
+
+# With options
+./target/release/devlens --port 8484 --filter "swapi" --verbose --bodies
+```
+
+### 3. Set up ADB tunnel (physical device)
 
 ```bash
 adb reverse tcp:8484 tcp:8484
@@ -77,7 +92,7 @@ adb reverse tcp:8484 tcp:8484
 
 **Android Emulator**: No setup needed — uses `ws://10.0.2.2:8484` automatically.
 
-### 3. Install & run the sample app
+### 4. Install & run the sample app
 
 ```bash
 cd sdk/android
@@ -90,7 +105,7 @@ Open the app, tap through the People / Films / Planets tabs — requests appear 
 
 ```
 USAGE:
-    probe [OPTIONS]
+    devlens [OPTIONS]
 
 OPTIONS:
     -p, --port <PORT>          Port to listen on [default: 8484]
@@ -107,16 +122,16 @@ OPTIONS:
 **Examples:**
 ```bash
 # Watch AI API calls in real-time
-probe --filter "openai\.com|anthropic\.com|claude"
+devlens --filter "openai\.com|anthropic\.com|claude"
 
 # Save traffic to file for later analysis
-probe --save session.jsonl
+devlens --save session.jsonl
 
 # Full verbose with bodies
-probe --verbose --bodies --filter "api\."
+devlens --verbose --bodies --filter "api\."
 
 # Show only large responses (>10KB)
-probe --min-size 10240
+devlens --min-size 10240
 ```
 
 ## Android Integration
@@ -127,7 +142,7 @@ probe --min-size 10240
 // settings.gradle.kts
 includeBuild("../path/to/probe/sdk/android") {
     dependencySubstitution {
-        substitute(module("dev.probe:plugin-network")).using(project(":plugin-network"))
+        substitute(module("tech.devlens:plugin-network")).using(project(":plugin-network"))
     }
 }
 ```
@@ -220,10 +235,29 @@ class DatabasePlugin(private val db: SupportSQLiteDatabase) : ProbePlugin {
 
 | Platform | Status | Notes |
 |----------|--------|-------|
-| Android  | ✅ Ready | `sdk/android/` — OkHttp interceptor, WebSocket transport |
-| iOS      | 🚧 Skeleton | `sdk/ios/` — Swift Package, contributions welcome |
-| Flutter  | 🚧 Skeleton | `sdk/flutter/` — Dart package, contributions welcome |
-| AuroraOS | 📋 Planned | `sdk/aurora/` — C++/Qt, see README |
+| Android  | ✅ Ready | `sdk/android/` — OkHttp interceptor, WebSocket transport, in-memory dump |
+| iOS      | 🔧 Stub | `sdk/ios/` — Swift Package with protocol definitions and data models; no WebSocket transport yet |
+| Flutter  | ⏸ Deferred | `sdk/flutter/` — not under active development |
+| AuroraOS | ⏸ Deferred | `sdk/aurora/` — not under active development |
+
+### Contributing a new SDK
+
+The protocol is simple and unidirectional (SDK → CLI). To add a new platform:
+1. Implement `ProbePlugin` and `ProbeHost` interfaces
+2. Build a WebSocket client that sends the `hello` handshake on connect
+3. Forward plugin events as `event` messages (see [WebSocket Protocol](#websocket-protocol))
+
+
+## Distribution
+
+| Component | Status |
+|-----------|--------|
+| Rust CLI binary | Build from source (`cargo build --release`) |
+| Homebrew formula | Planned — not yet published |
+| Android SDK (Maven) | Planned — not yet published to Maven Central |
+| iOS Swift Package | Available via local path; not yet on Swift Package Index |
+
+The project is pre-1.0. APIs and protocol may change before a stable release.
 
 ## Sample App
 
@@ -240,4 +274,4 @@ cd sdk/android && ./gradlew :sample:assembleRelease
 
 ## License
 
-MIT
+[MIT](LICENSE) — Copyright (c) 2024-2026 Andrey Vladislavov

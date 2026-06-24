@@ -1,6 +1,7 @@
 use colored::Colorize;
 use std::time::{SystemTime, UNIX_EPOCH};
-use crate::protocol::{HelloMessage, HttpTransaction};
+use crate::protocol::HelloMessage;
+use crate::protocol::HttpTransaction;
 
 pub struct Displayer {
     pub verbose: bool,
@@ -19,11 +20,11 @@ impl Displayer {
 
     pub fn print_startup_banner(&self, port: u16) {
         let version = env!("CARGO_PKG_VERSION");
-        let title = format!("  Probe v{}  •  Listening on :{}       ", version, port);
-        let waiting = "  Waiting for Android plugin connection...     ";
+        let title = format!("  DevLens v{}  •  Listening on :{}       ", version, port);
+        let waiting = "  Waiting for mobile app connection...        ";
 
-        // Determine width based on longest line
-        let width = title.len().max(waiting.len());
+        // Determine width based on longest line (char count, not bytes, for Unicode safety)
+        let width = title.chars().count().max(waiting.chars().count());
         let bar = "═".repeat(width);
 
         println!("╔{}╗", bar);
@@ -34,12 +35,7 @@ impl Displayer {
 
     pub fn print_connected(&self, hello: &HelloMessage) {
         let ts = current_timestamp();
-        let line = format!(
-            "[{}] Connected: {} ({}, Android {})",
-            ts, hello.app_package, hello.device_model, hello.android_version
-        );
-        println!("{} {}", ts_dim(&ts), format_connected_body(&hello.app_package, &hello.device_model, &hello.android_version));
-        let _ = line;
+        println!("{} {}", ts_dim(&ts), format_connected_body(hello));
     }
 
     pub fn print_disconnected(&self, app_package: &str) {
@@ -144,14 +140,18 @@ fn ts_dim(ts: &str) -> String {
     format!("[{}]", ts).dimmed().to_string()
 }
 
-fn format_connected_body(app_package: &str, device_model: &str, android_version: &str) -> String {
+fn format_connected_body(hello: &HelloMessage) -> String {
+    let platform = hello.platform.as_deref().unwrap_or("unknown");
+    let os_ver = hello.android_version.as_deref()
+        .or(hello.os_version.as_deref())
+        .unwrap_or("?");
     format!(
-        "Connected: {} ({}, Android {})",
-        app_package, device_model, android_version
+        "Connected: {} ({}, {} {})",
+        hello.app_package, hello.device_model, platform, os_ver
     )
 }
 
-fn format_status_code(code: i32) -> String {
+pub(crate) fn format_status_code(code: i32) -> String {
     let s = code.to_string();
     match code {
         200..=299 => s.green().to_string(),
@@ -162,7 +162,7 @@ fn format_status_code(code: i32) -> String {
     }
 }
 
-fn format_duration(ms: Option<i64>) -> String {
+pub(crate) fn format_duration(ms: Option<i64>) -> String {
     match ms {
         None => "-".to_string(),
         Some(ms) if ms < 1000 => format!("{}ms", ms),
@@ -173,7 +173,7 @@ fn format_duration(ms: Option<i64>) -> String {
     }
 }
 
-fn format_size(bytes: Option<i64>) -> String {
+pub(crate) fn format_size(bytes: Option<i64>) -> String {
     match bytes {
         None => "-".to_string(),
         Some(b) if b < 1024 => format!("{}B", b),
@@ -188,7 +188,7 @@ fn format_size(bytes: Option<i64>) -> String {
     }
 }
 
-fn truncate(s: &str, max_chars: usize) -> String {
+pub(crate) fn truncate(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         s.to_string()
     } else {
@@ -198,10 +198,144 @@ fn truncate(s: &str, max_chars: usize) -> String {
     }
 }
 
-fn pad_right(s: &str, width: usize) -> String {
-    if s.len() >= width {
+pub(crate) fn pad_right(s: &str, width: usize) -> String {
+    let char_count = s.chars().count();
+    if char_count >= width {
         s.to_string()
     } else {
-        format!("{}{}", s, " ".repeat(width - s.len()))
+        format!("{}{}", s, " ".repeat(width - char_count))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Disable color globally for these tests so we get predictable plain strings
+    fn no_color() {
+        colored::control::set_override(false);
+    }
+
+    // ── format_duration ─────────────────────────────────────────────────────
+
+    #[test]
+    fn format_duration_none_returns_dash() {
+        assert_eq!(format_duration(None), "-");
+    }
+
+    #[test]
+    fn format_duration_under_1000ms() {
+        assert_eq!(format_duration(Some(500)), "500ms");
+    }
+
+    #[test]
+    fn format_duration_zero_ms() {
+        assert_eq!(format_duration(Some(0)), "0ms");
+    }
+
+    #[test]
+    fn format_duration_exactly_1000ms() {
+        assert_eq!(format_duration(Some(1000)), "1.0s");
+    }
+
+    #[test]
+    fn format_duration_1500ms() {
+        assert_eq!(format_duration(Some(1500)), "1.5s");
+    }
+
+    // ── format_size ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn format_size_none_returns_dash() {
+        assert_eq!(format_size(None), "-");
+    }
+
+    #[test]
+    fn format_size_bytes_under_1kb() {
+        assert_eq!(format_size(Some(512)), "512B");
+    }
+
+    #[test]
+    fn format_size_zero_bytes() {
+        assert_eq!(format_size(Some(0)), "0B");
+    }
+
+    #[test]
+    fn format_size_exactly_1kb() {
+        assert_eq!(format_size(Some(1024)), "1.0KB");
+    }
+
+    #[test]
+    fn format_size_2kb() {
+        assert_eq!(format_size(Some(2048)), "2.0KB");
+    }
+
+    #[test]
+    fn format_size_1mb() {
+        assert_eq!(format_size(Some(1_048_576)), "1.0MB");
+    }
+
+    // ── format_status_code ──────────────────────────────────────────────────
+
+    #[test]
+    fn format_status_code_200_contains_number() {
+        no_color();
+        let s = format_status_code(200);
+        assert!(s.contains("200"), "expected '200' in {:?}", s);
+    }
+
+    #[test]
+    fn format_status_code_301_contains_number() {
+        no_color();
+        let s = format_status_code(301);
+        assert!(s.contains("301"), "expected '301' in {:?}", s);
+    }
+
+    #[test]
+    fn format_status_code_404_contains_number() {
+        no_color();
+        let s = format_status_code(404);
+        assert!(s.contains("404"), "expected '404' in {:?}", s);
+    }
+
+    #[test]
+    fn format_status_code_500_contains_number() {
+        no_color();
+        let s = format_status_code(500);
+        assert!(s.contains("500"), "expected '500' in {:?}", s);
+    }
+
+    // ── pad_right ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn pad_right_pads_shorter_string() {
+        assert_eq!(pad_right("abc", 5), "abc  ");
+    }
+
+    #[test]
+    fn pad_right_does_not_truncate_longer_string() {
+        assert_eq!(pad_right("abcde", 3), "abcde");
+    }
+
+    #[test]
+    fn pad_right_exact_width_unchanged() {
+        assert_eq!(pad_right("abc", 3), "abc");
+    }
+
+    // ── truncate ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn truncate_long_string_appends_ellipsis() {
+        assert_eq!(truncate("hello world", 5), "hello...");
+    }
+
+    #[test]
+    fn truncate_short_string_unchanged() {
+        assert_eq!(truncate("hi", 5), "hi");
+    }
+
+    #[test]
+    fn truncate_exact_length_unchanged() {
+        assert_eq!(truncate("hello", 5), "hello");
     }
 }

@@ -33,3 +33,4 @@ sdk/ios/.build/
 
 # Claude state (keep for reference)
 # .claude/
+mockwebserver3/

@@ -1,0 +1,12 @@
+public final class tech/devlens/layout/LayoutPlugin : tech/devlens/ProbePlugin {
+	public fun <init> ()V
+	public fun getDisplayName ()Ljava/lang/String;
+	public fun getId ()Ljava/lang/String;
+	public fun getSupportedPlatforms ()Ljava/util/Set;
+	public fun onAttach (Ltech/devlens/ProbeHost;)V
+	public fun onDetach ()V
+}
+
+public final class tech/devlens/layout/R {
+}
+

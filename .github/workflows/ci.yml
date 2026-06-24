@@ -84,7 +84,7 @@ jobs:
 
       - name: Build
         working-directory: sdk/android
-        run: ./gradlew build
+        run: ./gradlew build -x apiCheck
 
       - name: Detect API changes
         id: api_check

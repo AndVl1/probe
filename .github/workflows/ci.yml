@@ -80,6 +80,10 @@ jobs:
         working-directory: sdk/android
         run: ./gradlew build
 
+      - name: Check API compatibility
+        working-directory: sdk/android
+        run: ./gradlew apiCheck
+
       - name: Run unit tests
         working-directory: sdk/android
         run: ./gradlew test

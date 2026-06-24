@@ -1,0 +1,84 @@
+name: Backmerge to Develop
+
+on:
+  workflow_run:
+    workflows: ["Publish Release"]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  backmerge:
+    runs-on: ubuntu-latest
+    # Only run when the publish workflow succeeded
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(cat VERSION)
+          echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Backmerging v${VERSION} to develop"
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Create backmerge branch
+        id: branch
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          BRANCH="backmerge/v${VERSION}-to-develop"
+          if git ls-remote --exit-code origin "refs/heads/${BRANCH}" > /dev/null 2>&1; then
+            echo "Branch ${BRANCH} already exists — skipping (idempotent)."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            # Branch from main so the PR carries the version bump commit
+            git checkout -b "$BRANCH"
+            git push origin "$BRANCH"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "name=${BRANCH}" >> "$GITHUB_OUTPUT"
+
+      - name: Create pull request to develop
+        if: steps.branch.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.value }}
+          BRANCH: ${{ steps.branch.outputs.name }}
+        run: |
+          gh pr create \
+            --base develop \
+            --head "$BRANCH" \
+            --title "chore: backmerge v${VERSION} to develop" \
+            --body "## Backmerge v${VERSION} → develop
+
+          Syncs the version bump and any release-branch changes from \`main\` back to \`develop\`.
+
+          This PR was created automatically by the **Backmerge to Develop** workflow
+          after \`v${VERSION}\` was published successfully.
+
+          **If there are no conflicts, this can be merged immediately.
+          If conflicts exist, resolve them manually before merging.**"
+
+      - name: Enable auto-merge
+        if: steps.branch.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.branch.outputs.name }}
+        run: |
+          # Auto-merge is a best-effort step; it requires branch protection rules
+          # with required status checks to be configured on develop.
+          gh pr merge "$BRANCH" --auto --merge \
+            || echo "Auto-merge not enabled (branch protection may not be configured). Merge the PR manually."

@@ -43,8 +43,10 @@ import java.util.ArrayDeque
 class NetworkPlugin @JvmOverloads constructor(
     private val maxBodySize: Long = 1024 * 1024L,
     private val bufferSize: Int = 1000,
-    private val sanitizers: List<SanitizeRule> = emptyList()
+    sanitizers: List<SanitizeRule> = emptyList()
 ) : ProbePlugin {
+
+    private val sanitizers: List<SanitizeRule> = sanitizers.toList()
 
     override val id = "network"
     override val displayName = "Network"
@@ -68,6 +70,9 @@ class NetworkPlugin @JvmOverloads constructor(
     /**
      * Returns the last [last] captured transactions from the in-memory ring buffer.
      * Thread-safe. Works even when not connected to CLI.
+     *
+     * **Privacy note:** returns unmasked data regardless of [sanitizers] configuration.
+     * Do not pass the result to logging frameworks or crash reporters without your own masking.
      */
     fun dump(last: Int = 100): List<HttpTransaction> {
         return synchronized(bufferLock) {

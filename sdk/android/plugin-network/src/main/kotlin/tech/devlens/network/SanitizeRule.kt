@@ -42,7 +42,13 @@ class SanitizeRule(
 
     companion object {
 
-        /** Masks phone numbers such as +7 (999) 123-45-67 or 1-800-555-1234. */
+        /**
+         * Masks phone numbers such as +7 (999) 123-45-67 or 1-800-555-1234.
+         *
+         * **Note:** this pattern is intentionally broad and may match non-phone numeric strings
+         * (ISO dates, numeric IDs with dashes). Prefer precision over this preset when false
+         * positives are unacceptable.
+         */
         val PHONE = SanitizeRule(
             regex = Regex("""\+?\d[\d\-\s()]{6,}\d"""),
             label = "PHONE"

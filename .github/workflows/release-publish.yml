@@ -9,11 +9,13 @@ permissions:
   contents: write
 
 jobs:
-  publish:
+  prepare:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+      should_publish: ${{ steps.tag_check.outputs.should_publish }}
     steps:
-      - name: Checkout main
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -30,57 +32,49 @@ jobs:
           VERSION: ${{ steps.version.outputs.value }}
         run: |
           if git tag --list "v${VERSION}" | grep -q "v${VERSION}"; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Tag v${VERSION} already exists — skipping publish (idempotent run)."
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+            echo "Tag v${VERSION} already exists — skipping."
           else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
           fi
 
-      # ── Rust ─────────────────────────────────────────────────────────────────
+  test:
+    needs: prepare
+    if: needs.prepare.outputs.should_publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Set up Rust
-        if: steps.tag_check.outputs.exists == 'false'
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust dependencies
-        if: steps.tag_check.outputs.exists == 'false'
-        uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "cli -> cli/target"
-
-      - name: Run Rust tests
-        if: steps.tag_check.outputs.exists == 'false'
+      - name: Rust tests
         run: cargo test --workspace
 
-      # ── Android ──────────────────────────────────────────────────────────────
-
-      - name: Set up JDK 17
-        if: steps.tag_check.outputs.exists == 'false'
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
-
-      - name: Setup Gradle
-        if: steps.tag_check.outputs.exists == 'false'
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Build, test and validate Android SDK API
-        if: steps.tag_check.outputs.exists == 'false'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Android build + test + apiCheck
         working-directory: sdk/android
         run: ./gradlew build test apiCheck
-        # Note: apiCheck requires the Kotlin Binary Compatibility Validator plugin
-        # to be configured and .api files to be committed. Run ./gradlew apiDump
-        # to generate initial .api files if this task fails.
 
-      # ── Publish to Maven Central via vanniktech plugin ──────────────────
-      # GPG_PRIVATE_KEY is base64-encoded ASCII-armored key:
-      #   gpg --export-secret-keys --armor KEY_ID | base64
-      # The plugin uses in-memory signing — no secring.gpg needed.
-      # ─────────────────────────────────────────────────────────────────────
+  publish-maven:
+    needs: [prepare, test]
+    if: needs.prepare.outputs.should_publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Publish Android SDK to Maven Central
-        if: steps.tag_check.outputs.exists == 'false'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Publish to Maven Central
         working-directory: sdk/android
         env:
           ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.OSSRH_USERNAME }}
@@ -89,44 +83,153 @@ jobs:
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.GPG_PASSPHRASE }}
         run: ./gradlew publishAllPublicationsToMavenCentral -Prelease=true
 
-      # ── Tag and release ───────────────────────────────────────────────────
+  build-binaries:
+    needs: [prepare, test]
+    if: needs.prepare.outputs.should_publish == 'true'
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset_name: devlens-linux-x86_64
+          - os: macos-13
+            target: x86_64-apple-darwin
+            asset_name: devlens-macos-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset_name: devlens-macos-aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "cli -> cli/target"
+
+      - name: Build release binary
+        run: cargo build --release --manifest-path cli/Cargo.toml --target ${{ matrix.target }}
+
+      - name: Package binary
+        run: |
+          cp cli/target/${{ matrix.target }}/release/devlens ${{ matrix.asset_name }}
+          chmod +x ${{ matrix.asset_name }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: ${{ matrix.asset_name }}
+
+  release:
+    needs: [prepare, publish-maven, build-binaries]
+    if: needs.prepare.outputs.should_publish == 'true'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Configure git
-        if: steps.tag_check.outputs.exists == 'false'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Create and push git tag
-        if: steps.tag_check.outputs.exists == 'false'
-        env:
-          VERSION: ${{ steps.version.outputs.value }}
+      - name: Create and push tag
         run: |
           git tag "v${VERSION}"
           git push origin "v${VERSION}"
 
+      - name: Download all binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
       - name: Create GitHub Release
-        if: steps.tag_check.outputs.exists == 'false'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.value }}
         run: |
           gh release create "v${VERSION}" \
             --title "v${VERSION}" \
-            --generate-notes
+            --generate-notes \
+            artifacts/devlens-linux-x86_64/devlens-linux-x86_64 \
+            artifacts/devlens-macos-x86_64/devlens-macos-x86_64 \
+            artifacts/devlens-macos-aarch64/devlens-macos-aarch64
 
-      # ── Rust binary asset ─────────────────────────────────────────────────
+  update-homebrew:
+    needs: [prepare, release]
+    if: needs.prepare.outputs.should_publish == 'true'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - name: Download macOS binaries for SHA256
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
 
-      - name: Build Rust release binary
-        if: steps.tag_check.outputs.exists == 'false'
-        run: cargo build --release --manifest-path cli/Cargo.toml
-
-      - name: Upload binary to GitHub Release
-        if: steps.tag_check.outputs.exists == 'false'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.value }}
+      - name: Compute SHA256 checksums
+        id: sha
         run: |
-          ASSET_NAME="devlens-v${VERSION}-linux-x86_64"
-          cp cli/target/release/devlens "$ASSET_NAME"
-          gh release upload "v${VERSION}" "$ASSET_NAME"
+          echo "linux_x86_64=$(sha256sum artifacts/devlens-linux-x86_64/devlens-linux-x86_64 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "macos_x86_64=$(sha256sum artifacts/devlens-macos-x86_64/devlens-macos-x86_64 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "macos_aarch64=$(sha256sum artifacts/devlens-macos-aarch64/devlens-macos-aarch64 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          repository: AndVl1/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update formula
+        env:
+          SHA_LINUX_X86_64: ${{ steps.sha.outputs.linux_x86_64 }}
+          SHA_MACOS_X86_64: ${{ steps.sha.outputs.macos_x86_64 }}
+          SHA_MACOS_AARCH64: ${{ steps.sha.outputs.macos_aarch64 }}
+        run: |
+          cat > homebrew-tap/Formula/devlens.rb << FORMULA
+          class Devlens < Formula
+            desc "Multi-platform mobile app debugging inspector"
+            homepage "https://github.com/AndVl1/probe"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/AndVl1/probe/releases/download/v${VERSION}/devlens-macos-aarch64"
+                sha256 "${SHA_MACOS_AARCH64}"
+              else
+                url "https://github.com/AndVl1/probe/releases/download/v${VERSION}/devlens-macos-x86_64"
+                sha256 "${SHA_MACOS_X86_64}"
+              end
+            end
+
+            on_linux do
+              url "https://github.com/AndVl1/probe/releases/download/v${VERSION}/devlens-linux-x86_64"
+              sha256 "${SHA_LINUX_X86_64}"
+            end
+
+            def install
+              binary_name = Dir.glob("devlens-*").first || "devlens"
+              bin.install binary_name => "devlens"
+            end
+
+            test do
+              assert_match "devlens", shell_output("#{bin}/devlens --version")
+            end
+          end
+          FORMULA
+
+      - name: Push formula update
+        working-directory: homebrew-tap
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/devlens.rb
+          git commit -m "devlens ${VERSION}"
+          git push

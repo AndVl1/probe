@@ -12,6 +12,6 @@ async fn main() -> Result<()> {
         .with_target(false)
         .init();
 
-    let args = Arc::new(probe::Args::parse());
-    probe::server::run_server(args).await
+    let args = Arc::new(devlens::Args::parse());
+    devlens::server::run_server(args).await
 }

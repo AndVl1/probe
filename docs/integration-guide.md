@@ -1,6 +1,6 @@
-# Probe Integration Guide
+# DevLens Integration Guide
 
-Step-by-step instructions for integrating Probe into your app and connecting to the Probe CLI.
+Step-by-step instructions for integrating DevLens into your app and connecting to the DevLens CLI.
 
 ## Table of Contents
 
@@ -13,7 +13,7 @@ Step-by-step instructions for integrating Probe into your app and connecting to 
 
 ## CLI Setup
 
-The Probe CLI is the server side — it listens for SDK connections and renders captured data in the terminal.
+The DevLens CLI is the server side — it listens for SDK connections and renders captured data in the terminal.
 
 ### Build from source
 
@@ -21,7 +21,7 @@ The Probe CLI is the server side — it listens for SDK connections and renders 
 git clone https://github.com/AndVl1/probe
 cd probe
 cargo build --release
-./target/release/probe
+./target/release/devlens
 ```
 
 Requires [Rust toolchain](https://rustup.rs/) 1.70+.
@@ -29,7 +29,7 @@ Requires [Rust toolchain](https://rustup.rs/) 1.70+.
 ### Homebrew (coming soon)
 
 ```bash
-# brew install probe   ← formula not yet published; build from source for now
+# brew install devlens   ← formula not yet published; build from source for now
 ```
 
 ### Common flags
@@ -51,22 +51,22 @@ OPTIONS:
 
 ```bash
 # Watch all traffic
-probe
+devlens
 
 # Filter to a specific host
-probe --filter "api\.example\.com"
+devlens --filter "api\.example\.com"
 
 # Full verbose output including bodies
-probe --verbose --bodies
+devlens --verbose --bodies
 
 # Save session for later analysis
-probe --save session.jsonl
+devlens --save session.jsonl
 
 # Monitor AI API calls only
-probe --filter "openai\.com|anthropic\.com"
+devlens --filter "openai\.com|anthropic\.com"
 
 # Show only large responses (>10KB)
-probe --min-size 10240
+devlens --min-size 10240
 ```
 
 Start the CLI **before** launching your app. The SDK reconnects automatically when the CLI is running.
@@ -83,8 +83,8 @@ Once published, add to your app's `build.gradle.kts`:
 
 ```kotlin
 dependencies {
-    debugImplementation("dev.probe:core:0.1.0")
-    debugImplementation("dev.probe:plugin-network:0.1.0")
+    debugImplementation("tech.devlens:core:0.1.0")
+    debugImplementation("tech.devlens:plugin-network:0.1.0")
 }
 ```
 
@@ -96,8 +96,8 @@ Until the library is on Maven Central, use a [composite build](https://docs.grad
 // settings.gradle.kts (your app project)
 includeBuild("../path/to/probe/sdk/android") {
     dependencySubstitution {
-        substitute(module("dev.probe:core")).using(project(":core"))
-        substitute(module("dev.probe:plugin-network")).using(project(":plugin-network"))
+        substitute(module("tech.devlens:core")).using(project(":core"))
+        substitute(module("tech.devlens:plugin-network")).using(project(":plugin-network"))
     }
 }
 ```
@@ -107,12 +107,12 @@ Then declare the dependency as if it were published:
 ```kotlin
 // app/build.gradle.kts
 dependencies {
-    debugImplementation("dev.probe:core:0.1.0")
-    debugImplementation("dev.probe:plugin-network:0.1.0")
+    debugImplementation("tech.devlens:core:0.1.0")
+    debugImplementation("tech.devlens:plugin-network:0.1.0")
 }
 ```
 
-Use `debugImplementation`, not `implementation`. Probe must never ship in release builds.
+Use `debugImplementation`, not `implementation`. DevLens must never ship in release builds.
 
 ### 2. Initialize in Application.onCreate()
 
@@ -149,7 +149,7 @@ class MyApp : Application() {
 }
 ```
 
-Always wrap the `Probe.install` call in `BuildConfig.DEBUG`. The `if` check ensures the Proguard/R8 shrinker can remove all Probe code from release builds even if `debugImplementation` is used.
+Always wrap the `Probe.install` call in `BuildConfig.DEBUG`. The `if` check ensures the Proguard/R8 shrinker can remove all DevLens code from release builds even if `debugImplementation` is used.
 
 ### 3. Add the OkHttp interceptor
 
@@ -206,7 +206,7 @@ For WiFi connections (no USB), point `serverUrl` directly at your machine's LAN 
 
 ### Current limitations
 
-The iOS SDK is a **stub**. The public API compiles and the data models are complete, but the WebSocket transport that sends data to the Probe CLI is not yet implemented. `Probe.install(_:)` is a no-op.
+The iOS SDK is a **stub**. The public API compiles and the data models are complete, but the WebSocket transport that sends data to the DevLens CLI is not yet implemented. `Probe.install(_:)` is a no-op.
 
 What works today:
 - `NetworkPlugin.record(_:)` — manually populate the in-memory buffer
@@ -232,7 +232,7 @@ targets: [
     .target(
         name: "MyApp",
         dependencies: [
-            .product(name: "ProbeNetwork", package: "Probe")
+            .product(name: "ProbeNetwork", package: "DevLens")
         ]
     )
 ]
@@ -297,7 +297,7 @@ The iOS equivalent of `adb reverse` for physical devices requires `idb` (Meta's 
 
 The recommended startup order:
 
-1. Start the Probe CLI on your machine.
+1. Start the DevLens CLI on your machine.
 2. If using a physical device, set up port forwarding (`adb reverse` for Android).
 3. Launch the app. The SDK connects automatically and sends a `hello` handshake.
 4. Exercise the app — captured events appear in the terminal in real-time.
@@ -307,7 +307,7 @@ The CLI prints a banner when it is ready and logs each SDK connection:
 
 ```
 ╔═══════════════════════════════════════════════════╗
-║  Probe v0.1.0  •  Listening on :8484              ║
+║  DevLens v0.1.0  •  Listening on :8484            ║
 ║  Waiting for plugin connection...                  ║
 ╚═══════════════════════════════════════════════════╝
 

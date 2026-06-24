@@ -1,10 +1,10 @@
-# Probe iOS SDK
+# DevLens iOS SDK
 
-Part of the [Probe](../../README.md) multi-platform app inspector — a plugin-based debugging tool that streams real-time data from your mobile app to a terminal UI on your development machine.
+Part of the [DevLens](../../README.md) multi-platform app inspector — a plugin-based debugging tool that streams real-time data from your mobile app to a terminal UI on your development machine.
 
 ## Current Status
 
-**Stub implementation.** The Swift Package defines the public protocol surface (`ProbePlugin`, `ProbeHost`), data models (`HttpTransaction`), and plugin scaffolding (`NetworkPlugin`) — but the WebSocket transport that connects the SDK to the Probe CLI is not yet implemented.
+**Stub implementation.** The Swift Package defines the public protocol surface (`ProbePlugin`, `ProbeHost`), data models (`HttpTransaction`), and plugin scaffolding (`NetworkPlugin`) — but the WebSocket transport that connects the SDK to the DevLens CLI is not yet implemented.
 
 What is available today:
 - `Probe.Builder` / `Probe.install(_:)` API surface (compiles and type-checks, no-op at runtime)
@@ -31,7 +31,7 @@ targets: [
     .target(
         name: "MyApp",
         dependencies: [
-            .product(name: "ProbeNetwork", package: "Probe")
+            .product(name: "ProbeNetwork", package: "DevLens")
         ]
     )
 ]
@@ -53,7 +53,7 @@ targets: [
     .target(
         name: "MyApp",
         dependencies: [
-            .product(name: "ProbeNetwork", package: "probe")
+            .product(name: "ProbeNetwork", package: "DevLens")
         ]
     )
 ]

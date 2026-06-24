@@ -9,7 +9,7 @@ plugins {
 val publishableModules = setOf("core", "plugin-network", "plugin-db", "plugin-prefs", "plugin-layout")
 
 subprojects {
-    group = "dev.probe"
+    group = "tech.devlens"
     version = "0.1.0-SNAPSHOT"
 
     // Skip publication config for non-library modules (e.g. sample app).
@@ -19,12 +19,12 @@ subprojects {
     apply(plugin = "signing")
 
     val moduleDescription = when (name) {
-        "core" -> "Probe Android SDK — base module with ProbePlugin, ProbeHost, and WebSocketTransport"
-        "plugin-network" -> "Probe Android SDK — network traffic debugging plugin"
-        "plugin-db" -> "Probe Android SDK — database debugging plugin (stub)"
-        "plugin-prefs" -> "Probe Android SDK — SharedPreferences debugging plugin (stub)"
-        "plugin-layout" -> "Probe Android SDK — layout debugging plugin (stub)"
-        else -> "Probe Android SDK module"
+        "core" -> "DevLens Android SDK — base module with ProbePlugin, ProbeHost, and WebSocketTransport"
+        "plugin-network" -> "DevLens Android SDK — network traffic debugging plugin"
+        "plugin-db" -> "DevLens Android SDK — database debugging plugin (stub)"
+        "plugin-prefs" -> "DevLens Android SDK — SharedPreferences debugging plugin (stub)"
+        "plugin-layout" -> "DevLens Android SDK — layout debugging plugin (stub)"
+        else -> "DevLens Android SDK module"
     }
 
     // AGP registers components["release"] in its own afterEvaluate callback.
@@ -44,7 +44,7 @@ subprojects {
                     create<MavenPublication>("release") {
                         from(components["release"])
                         pom {
-                            name.set("Probe ${project.name}")
+                            name.set("DevLens ${project.name}")
                             description.set(moduleDescription)
                             url.set("https://github.com/AndVl1/probe")
                             licenses {

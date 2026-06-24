@@ -7,9 +7,9 @@ use clap::Parser;
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "probe",
+    name = "devlens",
     version,
-    about = "Plugin-based mobile app inspector. Captures network, database, preferences and more."
+    about = "DevLens — plugin-based mobile app inspector. Captures network, database, preferences and more."
 )]
 pub struct Args {
     /// Port to listen on

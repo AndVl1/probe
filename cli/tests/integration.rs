@@ -1,7 +1,7 @@
 /// Integration tests: full WebSocket pipeline
 ///
 /// Each test binds a random port, spawns a lightweight server loop using
-/// `probe::server::handle_connection`, connects via tokio-tungstenite, and
+/// `devlens::server::handle_connection`, connects via tokio-tungstenite, and
 /// asserts on the shared `TransactionBuffer`.
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -9,7 +9,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio_tungstenite::{connect_async, tungstenite::Message as WsMessage};
 
-use probe::{
+use devlens::{
     Args,
     display::Displayer,
     filter::Filter,

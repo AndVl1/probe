@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "Probe",
+    name: "DevLens",
     platforms: [.iOS(.v14), .macOS(.v12)],
     products: [
         .library(name: "ProbeCore", targets: ["ProbeCore"]),

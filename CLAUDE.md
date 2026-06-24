@@ -1,6 +1,6 @@
-# CLAUDE.md — Probe
+# CLAUDE.md — DevLens
 
-Probe is a Flipper-inspired multi-platform debugging SDK with a Rust CLI server.
+DevLens is a Flipper-inspired multi-platform debugging SDK with a Rust CLI server.
 SDKs connect via WebSocket to the CLI and stream plugin events (network requests, DB queries, etc.) for real-time terminal display.
 
 ## Architecture
@@ -9,7 +9,7 @@ SDKs connect via WebSocket to the CLI and stream plugin events (network requests
 SDK (client) ──WebSocket JSON──► CLI server (Rust, port 8484)
 ```
 
-- **CLI** (`cli/`) — Rust/tokio WebSocket server. Receives JSON events, renders terminal UI, optionally saves to JSONL.
+- **DevLens CLI** (`cli/`) — Rust/tokio WebSocket server. Receives JSON events, renders terminal UI, optionally saves to JSONL.
 - **Android SDK** (`sdk/android/`) — Kotlin, Gradle multi-module. The only production-ready SDK.
 - **iOS SDK** (`sdk/ios/`) — Swift Package. Stub: protocol definitions + `HttpTransaction` data model only. No WebSocket transport implemented.
 - **Flutter SDK** (`sdk/flutter/`) — Deferred. Do not touch.
@@ -21,7 +21,7 @@ SDK (client) ──WebSocket JSON──► CLI server (Rust, port 8484)
 
 ```bash
 cargo build                       # debug
-cargo build --release             # release → target/release/probe
+cargo build --release             # release → target/release/devlens
 cargo run -- --port 8484          # dev run with options
 cargo test                        # unit tests
 ```
@@ -105,14 +105,14 @@ All messages are UTF-8 JSON. Flow is unidirectional: SDK → CLI.
 3. **Queue is bounded (500).** When full, the oldest item is dropped (not the new one). Do not increase without measuring memory impact.
 4. **Auto-reconnect at 3s.** Transport retries indefinitely. No user action needed.
 5. **Plugin IDs are protocol-stable.** `ProbePlugin.id` appears in every event message. Changing it after publishing is a breaking change.
-6. **Debug-only.** Guard `Probe.install()` with `BuildConfig.DEBUG` (Android) or `#if DEBUG` (iOS). Never ship Probe in release builds.
+6. **Debug-only.** Guard `Probe.install()` with `BuildConfig.DEBUG` (Android) or `#if DEBUG` (iOS). Never ship DevLens in release builds.
 
 ## Conventions
 
 ### Android
 - Kotlin **2.4.0**, AGP **9.2.0**, Gradle **9.5.1**
 - `minSdk 24`, `compileSdk 36`, `targetSdk 35`, JVM target **17**
-- Group: `dev.probe`; artifact IDs match module names (`core`, `plugin-network`, etc.)
+- Group: `tech.devlens`; artifact IDs match module names (`core`, `plugin-network`, etc.)
 
 ### iOS
 - Swift 6.0+, no external dependencies
@@ -122,13 +122,13 @@ All messages are UTF-8 JSON. Flow is unidirectional: SDK → CLI.
 ### Rust CLI
 - Edition 2021
 - Use `anyhow` for errors, `tracing` + `tracing-subscriber` for logs (not `println!`)
-- Binary name: `probe`
+- Binary name: `devlens`
 
 ## What NOT To Do
 
 - Do NOT block in `ProbePlugin.onAttach()` / `onDetach()` — called on the main/connection thread.
 - Do NOT call `ProbeHost.send()` with blocking pre-processing — it's already async, but don't hold locks around it.
-- Do NOT run Probe in release builds — strip it entirely with a `BuildConfig.DEBUG` guard, not just disable the connection.
+- Do NOT run DevLens in release builds — strip it entirely with a `BuildConfig.DEBUG` guard, not just disable the connection.
 - Do NOT add external runtime dependencies to `:core` or `:plugin-network` beyond OkHttp and Gson. Keep the SDK footprint minimal.
 - Do NOT change published `ProbePlugin.id` values — breaking protocol change.
 - Do NOT hardcode port 8484 anywhere in SDK code — always read from builder config.

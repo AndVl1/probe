@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "dev.probe.sample"
+    namespace = "tech.devlens.sample"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "dev.probe.sample"
+        applicationId = "tech.devlens.sample"
         minSdk = 24
         targetSdk = 35
         versionCode = 1

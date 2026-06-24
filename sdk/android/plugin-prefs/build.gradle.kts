@@ -3,7 +3,7 @@ plugins {
 }
 
 android {
-    namespace = "dev.probe.prefs"
+    namespace = "tech.devlens.prefs"
     compileSdk = 36
     defaultConfig { minSdk = 24 }
     compileOptions {

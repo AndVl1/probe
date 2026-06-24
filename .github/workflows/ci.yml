@@ -80,9 +80,23 @@ jobs:
         working-directory: sdk/android
         run: ./gradlew build
 
-      - name: Check API compatibility
+      - name: Detect API changes (informational)
         working-directory: sdk/android
-        run: ./gradlew apiCheck
+        continue-on-error: true
+        run: |
+          if ! ./gradlew apiCheck 2>/dev/null; then
+            echo "::warning::Public API changes detected. After merge, api-dump workflow will regenerate .api files."
+            echo "### ⚠️ API Changes Detected" >> $GITHUB_STEP_SUMMARY
+            echo "This PR modifies the public API surface. After merge, .api files will be regenerated automatically." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            ./gradlew apiDump 2>/dev/null || true
+            echo '```diff' >> $GITHUB_STEP_SUMMARY
+            git diff --no-color -- '*/api/*.api' >> $GITHUB_STEP_SUMMARY || true
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            git checkout -- . 2>/dev/null || true
+          else
+            echo "✅ No public API changes." >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: Run unit tests
         working-directory: sdk/android

@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+  pull-requests: write
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -80,22 +84,53 @@ jobs:
         working-directory: sdk/android
         run: ./gradlew build
 
-      - name: Detect API changes (informational)
+      - name: Detect API changes
+        id: api_check
         working-directory: sdk/android
         continue-on-error: true
         run: |
+          MARKER="<!-- devlens-api-check -->"
           if ! ./gradlew apiCheck 2>/dev/null; then
-            echo "::warning::Public API changes detected. After merge, api-dump workflow will regenerate .api files."
-            echo "### ⚠️ API Changes Detected" >> $GITHUB_STEP_SUMMARY
-            echo "This PR modifies the public API surface. After merge, .api files will be regenerated automatically." >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
             ./gradlew apiDump 2>/dev/null || true
-            echo '```diff' >> $GITHUB_STEP_SUMMARY
-            git diff --no-color -- '*/api/*.api' >> $GITHUB_STEP_SUMMARY || true
-            echo '```' >> $GITHUB_STEP_SUMMARY
+            {
+              echo "$MARKER"
+              echo "### ⚠️ API Changes Detected"
+              echo ""
+              echo "This PR modifies the public API surface. After merge, \`.api\` files will be regenerated automatically."
+              echo ""
+              echo '```diff'
+              git diff --no-color -- '*/api/*.api'
+              echo '```'
+            } > /tmp/api-comment.md
             git checkout -- . 2>/dev/null || true
           else
-            echo "✅ No public API changes." >> $GITHUB_STEP_SUMMARY
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "$MARKER"
+              echo "### ✅ No public API changes"
+            } > /tmp/api-comment.md
+          fi
+
+      - name: Post or update PR comment
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          MARKER="<!-- devlens-api-check -->"
+          BODY=$(cat /tmp/api-comment.md)
+
+          # Find existing comment by marker
+          COMMENT_ID=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+            --jq ".[] | select(.body | startswith(\"$MARKER\")) | .id" | head -1)
+
+          if [ -n "$COMMENT_ID" ]; then
+            gh api "repos/${{ github.repository }}/issues/comments/${COMMENT_ID}" \
+              -X PATCH -f body="$BODY"
+          else
+            gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+              -f body="$BODY"
           fi
 
       - name: Run unit tests

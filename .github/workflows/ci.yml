@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
 
 permissions:
   contents: read
@@ -41,7 +41,8 @@ jobs:
     if: |
       needs.detect-changes.outputs.rust == 'true' ||
       needs.detect-changes.outputs.ci == 'true' ||
-      github.ref == 'refs/heads/main'
+      github.ref == 'refs/heads/main' ||
+      github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -68,7 +69,8 @@ jobs:
     if: |
       needs.detect-changes.outputs.android == 'true' ||
       needs.detect-changes.outputs.ci == 'true' ||
-      github.ref == 'refs/heads/main'
+      github.ref == 'refs/heads/main' ||
+      github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -82,7 +84,7 @@ jobs:
 
       - name: Build
         working-directory: sdk/android
-        run: ./gradlew build
+        run: ./gradlew build -x apiCheck
 
       - name: Detect API changes
         id: api_check
@@ -93,14 +95,31 @@ jobs:
           if ! ./gradlew apiCheck 2>/dev/null; then
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
             ./gradlew apiDump 2>/dev/null || true
+            DIFF=$(git diff --no-color -- '*/api/*.api')
+
+            # Determine version bump from the diff
+            REMOVED=$(echo "$DIFF" | grep '^-[^-]' | grep -v '^\-\-\-' || true)
+            if [ -n "$REMOVED" ]; then
+              CURRENT_MAJOR=$(cut -d. -f1 < ../../VERSION 2>/dev/null || echo "0")
+              if [ "$CURRENT_MAJOR" -eq 0 ] 2>/dev/null; then
+                BUMP="⚠️ **minor** (breaking change, pre-1.0)"
+              else
+                BUMP="🚨 **major** (breaking change)"
+              fi
+            else
+              BUMP="📦 **minor** (new public API)"
+            fi
+
             {
               echo "$MARKER"
               echo "### ⚠️ API Changes Detected"
               echo ""
+              echo "**Version bump:** $BUMP"
+              echo ""
               echo "This PR modifies the public API surface. After merge, \`.api\` files will be regenerated automatically."
               echo ""
               echo '```diff'
-              git diff --no-color -- '*/api/*.api'
+              echo "$DIFF"
               echo '```'
             } > /tmp/api-comment.md
             git checkout -- . 2>/dev/null || true
@@ -109,6 +128,8 @@ jobs:
             {
               echo "$MARKER"
               echo "### ✅ No public API changes"
+              echo ""
+              echo "**Version bump:** 📦 **patch** (no API changes)"
             } > /tmp/api-comment.md
           fi
 

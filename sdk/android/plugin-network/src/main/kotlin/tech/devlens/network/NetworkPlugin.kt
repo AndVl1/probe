@@ -22,6 +22,15 @@ import java.util.ArrayDeque
  *     .build()
  * ```
  *
+ * ## Privacy mode
+ * Pass [sanitizers] to mask sensitive data before streaming to the CLI.
+ * The in-memory buffer always retains the original (unmasked) data.
+ * ```kotlin
+ * val network = NetworkPlugin(
+ *     sanitizers = listOf(SanitizeRule.BEARER_TOKEN, SanitizeRule.EMAIL)
+ * )
+ * ```
+ *
  * ## Dump recent transactions (without CLI)
  * ```kotlin
  * val recent: List<HttpTransaction> = network.dump(last = 50)
@@ -29,10 +38,12 @@ import java.util.ArrayDeque
  *
  * @param maxBodySize     Max request/response body size to capture. Default 1MB.
  * @param bufferSize      In-memory ring buffer size (number of transactions). Default 1000.
+ * @param sanitizers      Rules applied to mask sensitive fields before sending to CLI. Default none.
  */
-class NetworkPlugin(
+class NetworkPlugin @JvmOverloads constructor(
     private val maxBodySize: Long = 1024 * 1024L,
-    private val bufferSize: Int = 1000
+    private val bufferSize: Int = 1000,
+    private val sanitizers: List<SanitizeRule> = emptyList()
 ) : ProbePlugin {
 
     override val id = "network"
@@ -70,9 +81,10 @@ class NetworkPlugin(
 
     internal fun record(transaction: HttpTransaction) {
         synchronized(bufferLock) {
-            buffer.addLast(transaction)
+            buffer.addLast(transaction) // original retained in buffer
             if (buffer.size > bufferSize) buffer.removeFirst()
         }
-        host?.send(id, transaction.toPayload())
+        val payload = if (sanitizers.isEmpty()) transaction else transaction.sanitized(sanitizers)
+        host?.send(id, payload.toPayload()) // masked (or original if no rules) to CLI
     }
 }

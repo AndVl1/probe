@@ -14,6 +14,8 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.value }}
       should_publish: ${{ steps.tag_check.outputs.should_publish }}
+      cli_changed: ${{ steps.changes.outputs.cli }}
+      sdk_changed: ${{ steps.changes.outputs.sdk }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,6 +38,36 @@ jobs:
             echo "Tag v${VERSION} already exists — skipping."
           else
             echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Detect what changed since last tag
+        id: changes
+        run: |
+          LAST_TAG=$(git tag --sort=-version:refname -l 'v*' | head -n1)
+          if [ -z "$LAST_TAG" ]; then
+            # No previous tag — everything is new
+            echo "cli=true" >> "$GITHUB_OUTPUT"
+            echo "sdk=true" >> "$GITHUB_OUTPUT"
+            echo "First release — publishing everything."
+          else
+            CLI_DIFF=$(git diff --name-only "$LAST_TAG"..HEAD -- cli/ Cargo.toml Cargo.lock | head -1)
+            SDK_DIFF=$(git diff --name-only "$LAST_TAG"..HEAD -- sdk/android/ | head -1)
+
+            if [ -n "$CLI_DIFF" ]; then
+              echo "cli=true" >> "$GITHUB_OUTPUT"
+              echo "CLI changed since $LAST_TAG"
+            else
+              echo "cli=false" >> "$GITHUB_OUTPUT"
+              echo "CLI unchanged since $LAST_TAG — skipping binary build"
+            fi
+
+            if [ -n "$SDK_DIFF" ]; then
+              echo "sdk=true" >> "$GITHUB_OUTPUT"
+              echo "SDK changed since $LAST_TAG"
+            else
+              echo "sdk=false" >> "$GITHUB_OUTPUT"
+              echo "SDK unchanged since $LAST_TAG — skipping Maven publish"
+            fi
           fi
 
   test:
@@ -63,7 +95,9 @@ jobs:
 
   publish-maven:
     needs: [prepare, test]
-    if: needs.prepare.outputs.should_publish == 'true'
+    if: >-
+      needs.prepare.outputs.should_publish == 'true' &&
+      needs.prepare.outputs.sdk_changed == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -85,7 +119,9 @@ jobs:
 
   build-binaries:
     needs: [prepare, test]
-    if: needs.prepare.outputs.should_publish == 'true'
+    if: >-
+      needs.prepare.outputs.should_publish == 'true' &&
+      needs.prepare.outputs.cli_changed == 'true'
     strategy:
       matrix:
         include:
@@ -124,12 +160,19 @@ jobs:
           path: ${{ matrix.asset_name }}
 
   release:
-    needs: [prepare, publish-maven, build-binaries]
-    if: needs.prepare.outputs.should_publish == 'true'
+    needs: [prepare, test, publish-maven, build-binaries]
+    if: >-
+      always() &&
+      needs.prepare.outputs.should_publish == 'true' &&
+      needs.test.result == 'success' &&
+      (needs.publish-maven.result == 'success' || needs.publish-maven.result == 'skipped') &&
+      (needs.build-binaries.result == 'success' || needs.build-binaries.result == 'skipped')
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
       GH_TOKEN: ${{ github.token }}
+      CLI_CHANGED: ${{ needs.prepare.outputs.cli_changed }}
+      SDK_CHANGED: ${{ needs.prepare.outputs.sdk_changed }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -145,29 +188,55 @@ jobs:
           git tag "v${VERSION}"
           git push origin "v${VERSION}"
 
-      - name: Download all binaries
+      - name: Download binaries
+        if: env.CLI_CHANGED == 'true'
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - name: Create GitHub Release
+      - name: Build release notes
+        id: notes
+        run: |
+          BODY="## What's published\n"
+          if [ "$SDK_CHANGED" = "true" ]; then
+            BODY="${BODY}- **Android SDK** → Maven Central \`tech.devlens:*:${VERSION}\`\n"
+          fi
+          if [ "$CLI_CHANGED" = "true" ]; then
+            BODY="${BODY}- **CLI binary** → GitHub Release assets + Homebrew\n"
+          fi
+          echo "$BODY" > /tmp/release-notes.md
+
+      - name: Create GitHub Release (with binaries)
+        if: env.CLI_CHANGED == 'true'
         run: |
           gh release create "v${VERSION}" \
             --title "v${VERSION}" \
+            --notes-file /tmp/release-notes.md \
             --generate-notes \
             artifacts/devlens-linux-x86_64/devlens-linux-x86_64 \
             artifacts/devlens-macos-x86_64/devlens-macos-x86_64 \
             artifacts/devlens-macos-aarch64/devlens-macos-aarch64
 
+      - name: Create GitHub Release (SDK only, no binaries)
+        if: env.CLI_CHANGED != 'true'
+        run: |
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
+            --notes-file /tmp/release-notes.md \
+            --generate-notes
+
   update-homebrew:
-    needs: [prepare, release]
-    if: needs.prepare.outputs.should_publish == 'true'
+    needs: [prepare, release, build-binaries]
+    if: >-
+      needs.prepare.outputs.should_publish == 'true' &&
+      needs.prepare.outputs.cli_changed == 'true' &&
+      needs.build-binaries.result == 'success'
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
       GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
     steps:
-      - name: Download macOS binaries for SHA256
+      - name: Download binaries for SHA256
         uses: actions/download-artifact@v4
         with:
           path: artifacts

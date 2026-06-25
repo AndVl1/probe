@@ -86,8 +86,23 @@ jobs:
         working-directory: sdk/android
         run: ./gradlew build -x apiCheck
 
+      - name: Rebase onto target branch
+        if: github.event_name == 'pull_request'
+        id: rebase
+        run: |
+          git fetch --unshallow 2>/dev/null || true
+          git fetch origin "${{ github.event.pull_request.base.ref }}"
+          git checkout "${{ github.event.pull_request.head.sha }}"
+          git config user.name "ci"
+          git config user.email "ci@noreply"
+          if ! git rebase "origin/${{ github.event.pull_request.base.ref }}"; then
+            git rebase --abort
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Detect API changes
         id: api_check
+        if: steps.rebase.outputs.conflict != 'true'
         working-directory: sdk/android
         continue-on-error: true
         run: |

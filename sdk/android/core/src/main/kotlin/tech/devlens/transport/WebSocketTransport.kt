@@ -26,6 +26,10 @@ private const val MAX_QUEUE_SIZE = 500
  * @param serverUrl  WebSocket server URL (e.g. "ws://localhost:8484")
  * @param appPackage App package name (sent in the hello handshake)
  * @param deviceInfo Additional device metadata sent on connect
+ * @param clientId   Stable client identifier — one UUID per transport instance,
+ *                   reused across reconnects so the CLI can correlate successive
+ *                   sessions from the same app instance. `java.util.UUID` is JDK
+ *                   stdlib → no new dependencies.
  */
 class WebSocketTransport(
     private val serverUrl: String,
@@ -33,7 +37,8 @@ class WebSocketTransport(
     private val deviceInfo: Map<String, String> = defaultDeviceInfo(),
     private val client: OkHttpClient = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
-        .build()
+        .build(),
+    private val clientId: String = java.util.UUID.randomUUID().toString()
 ) : ProbeTransport {
 
     private val gson = Gson()
@@ -134,7 +139,7 @@ class WebSocketTransport(
     private fun buildHello(): Map<String, Any> = buildMap {
         put("type", "hello")
         put("appPackage", appPackage)
-        put("clientId", java.util.UUID.randomUUID().toString())
+        put("clientId", clientId)
         putAll(deviceInfo)
     }
 

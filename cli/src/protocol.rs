@@ -52,6 +52,75 @@ pub struct HttpTransaction {
     pub error: Option<String>,
 }
 
+/// CLI-internal lifecycle envelopes.
+///
+/// These are NOT wire `Message` variants — the WebSocket protocol is unchanged.
+/// They are synthetic NDJSON entries the CLI pushes into its `EventBuffer` so an
+/// agent (via `devlens dump`) can see connection boundaries interleaved with
+/// events in chronological order: `{type:connect}` → `{type:hello}` →
+/// `{type:event}` → `{type:disconnect}`. A `{type:gap}` envelope is emitted by
+/// the control plane when entries were lost to buffer eviction between dumps.
+pub mod lifecycle {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Wall-clock time in milliseconds since UNIX_EPOCH (0 on clock error).
+    ///
+    /// Matches the millisecond resolution used by SDK event timestamps.
+    pub fn now_millis() -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    }
+
+    /// A WebSocket client completed the TCP+WS handshake.
+    pub fn connect(peer: &str, timestamp: i64) -> serde_json::Value {
+        serde_json::json!({
+            "type": "connect",
+            "peer": peer,
+            "timestamp": timestamp,
+        })
+    }
+
+    /// Pass-through of the SDK hello message — no field loss.
+    ///
+    /// The raw wire value is preserved verbatim; `timestamp` is injected only
+    /// when the raw message did not already carry one (the current Android hello
+    /// does not include a top-level timestamp).
+    pub fn hello(mut raw: serde_json::Value, timestamp: i64) -> serde_json::Value {
+        if raw.get("timestamp").is_none() {
+            raw["timestamp"] = serde_json::json!(timestamp);
+        }
+        raw
+    }
+
+    /// A WebSocket client went away. `app_package`/`client_id` are `None` when
+    /// the connection closed before sending a hello.
+    pub fn disconnect(
+        app_package: Option<&str>,
+        client_id: Option<&str>,
+        timestamp: i64,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "type": "disconnect",
+            "appPackage": app_package,
+            "clientId": client_id,
+            "timestamp": timestamp,
+        })
+    }
+
+    /// `dropped` entries were evicted between the client's last cursor and the
+    /// oldest surviving buffer entry. Emitted as the first body line of a dump
+    /// that encountered loss.
+    pub fn gap(dropped: u64, timestamp: i64) -> serde_json::Value {
+        serde_json::json!({
+            "type": "gap",
+            "dropped": dropped,
+            "timestamp": timestamp,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,5 +276,73 @@ mod tests {
         assert_eq!(restored.plugin, original.plugin);
         assert_eq!(restored.timestamp, original.timestamp);
         assert_eq!(restored.payload, original.payload);
+    }
+
+    // ── lifecycle envelopes ────────────────────────────────────────────────────
+
+    #[test]
+    fn lifecycle_connect_shape() {
+        let v = lifecycle::connect("127.0.0.1:1234", 7);
+        assert_eq!(v["type"], "connect");
+        assert_eq!(v["peer"], "127.0.0.1:1234");
+        assert_eq!(v["timestamp"], 7);
+    }
+
+    #[test]
+    fn lifecycle_hello_passes_through_without_field_loss() {
+        let raw = serde_json::json!({
+            "type": "hello",
+            "clientId": "c-1",
+            "appPackage": "com.x",
+            "deviceModel": "Pixel",
+            "platform": "android"
+        });
+        let v = lifecycle::hello(raw, 99);
+        // original fields preserved
+        assert_eq!(v["type"], "hello");
+        assert_eq!(v["clientId"], "c-1");
+        assert_eq!(v["appPackage"], "com.x");
+        assert_eq!(v["deviceModel"], "Pixel");
+        assert_eq!(v["platform"], "android");
+        // timestamp injected because raw lacked one
+        assert_eq!(v["timestamp"], 99);
+    }
+
+    #[test]
+    fn lifecycle_hello_preserves_existing_timestamp() {
+        let raw = serde_json::json!({"type": "hello", "timestamp": 5});
+        let v = lifecycle::hello(raw, 99);
+        assert_eq!(v["timestamp"], 5, "existing timestamp must not be overwritten");
+    }
+
+    #[test]
+    fn lifecycle_disconnect_with_known_client() {
+        let v = lifecycle::disconnect(Some("com.x"), Some("c-1"), 3);
+        assert_eq!(v["type"], "disconnect");
+        assert_eq!(v["appPackage"], "com.x");
+        assert_eq!(v["clientId"], "c-1");
+        assert_eq!(v["timestamp"], 3);
+    }
+
+    #[test]
+    fn lifecycle_disconnect_without_hello() {
+        let v = lifecycle::disconnect(None, None, 3);
+        assert_eq!(v["type"], "disconnect");
+        assert!(v["appPackage"].is_null());
+        assert!(v["clientId"].is_null());
+    }
+
+    #[test]
+    fn lifecycle_gap_shape() {
+        let v = lifecycle::gap(42, 123);
+        assert_eq!(v["type"], "gap");
+        assert_eq!(v["dropped"], 42);
+        assert_eq!(v["timestamp"], 123);
+    }
+
+    #[test]
+    fn lifecycle_now_millis_is_positive() {
+        // Sanity: the clock is past the epoch.
+        assert!(lifecycle::now_millis() > 1_000_000_000_000);
     }
 }

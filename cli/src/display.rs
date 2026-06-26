@@ -27,10 +27,12 @@ impl Displayer {
         let width = title.chars().count().max(waiting.chars().count());
         let bar = "═".repeat(width);
 
-        println!("╔{}╗", bar);
-        println!("║{}║", pad_right(&title, width));
-        println!("║{}║", pad_right(waiting, width));
-        println!("╚{}╝", bar);
+        // Banner is a human-facing log -> stderr so the default agent daemon
+        // keeps stdout clean for NDJSON dump batches.
+        eprintln!("╔{}╗", bar);
+        eprintln!("║{}║", pad_right(&title, width));
+        eprintln!("║{}║", pad_right(waiting, width));
+        eprintln!("╚{}╝", bar);
     }
 
     pub fn print_connected(&self, hello: &HelloMessage) {

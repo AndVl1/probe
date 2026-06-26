@@ -183,4 +183,130 @@ class WebSocketTransportE2ETest {
         assertEquals("GET", payload["method"])
         assertEquals("https://example.com/api", payload["url"])
     }
+
+    // ------------------------------------------------------------------
+    // Test 3: clientId is stable across reconnects on the same instance
+    // ------------------------------------------------------------------
+
+    /**
+     * One UUID is generated per transport instance (primary-constructor default
+     * arg) and reused for every hello handshake. This test verifies that a
+     * disconnect → connect cycle on the SAME [WebSocketTransport] produces two
+     * hello messages with identical [clientId]s, both valid UUIDs.
+     *
+     * MockWebServer dequeues responses in FIFO order, so the first WebSocket
+     * upgrade is consumed by the initial [WebSocketTransport.connect] and the
+     * second by the reconnect — each carrying its own listener to capture the
+     * hello independently.
+     */
+    @Test
+    fun clientIdStableAcrossReconnects() {
+        val firstHelloMessages = Collections.synchronizedList(mutableListOf<String>())
+        val secondHelloMessages = Collections.synchronizedList(mutableListOf<String>())
+        val firstConnectLatch = CountDownLatch(1)
+        val secondConnectLatch = CountDownLatch(1)
+
+        // First connection — captures the initial hello.
+        server.enqueue(
+            MockResponse.Builder()
+                .webSocketUpgrade(object : WebSocketListener() {
+                    override fun onOpen(webSocket: WebSocket, response: Response) {
+                        firstConnectLatch.countDown()
+                    }
+                    override fun onMessage(webSocket: WebSocket, text: String) {
+                        firstHelloMessages.add(text)
+                    }
+                    override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                        // Echo the close frame so the handshake completes on both sides.
+                        // Without this MockWebServer.close() times out.
+                        webSocket.close(1000, null)
+                    }
+                    override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                        wsClosedLatch.countDown()
+                    }
+                    override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                        wsClosedLatch.countDown()
+                    }
+                })
+                .build()
+        )
+        // Second connection — captures the hello sent after reconnect.
+        server.enqueue(
+            MockResponse.Builder()
+                .webSocketUpgrade(object : WebSocketListener() {
+                    override fun onOpen(webSocket: WebSocket, response: Response) {
+                        secondConnectLatch.countDown()
+                    }
+                    override fun onMessage(webSocket: WebSocket, text: String) {
+                        secondHelloMessages.add(text)
+                    }
+                    override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                        webSocket.close(1000, null)
+                    }
+                    override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                        wsClosedLatch.countDown()
+                    }
+                    override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                        wsClosedLatch.countDown()
+                    }
+                })
+                .build()
+        )
+        server.start()
+
+        val wsUrl = server.url("/").toString().replace("http://", "ws://")
+        transport = WebSocketTransport(serverUrl = wsUrl, appPackage = "tech.devlens.test")
+
+        // Initial connect — consumes the first queued response.
+        transport.connect()
+        assertTrue(
+            "First connection must open within 5s",
+            firstConnectLatch.await(5, TimeUnit.SECONDS)
+        )
+        // Give the sender thread one full poll cycle (500 ms) to drain the hello.
+        Thread.sleep(600)
+
+        // Disconnect closes the first WebSocket; its close handshake fires onClosed
+        // on the server side. Brief pause to let that settle before reconnecting.
+        transport.disconnect()
+        Thread.sleep(500)
+
+        // Reconnect on the SAME transport instance — consumes the second queued
+        // response. connect() takes the initial-attempt path (not the scheduler,
+        // which disconnect() shut down), so no RejectedExecutionException.
+        transport.connect()
+        assertTrue(
+            "Second connection must open within 5s",
+            secondConnectLatch.await(5, TimeUnit.SECONDS)
+        )
+        Thread.sleep(600)
+
+        assertTrue("First hello must have been received", firstHelloMessages.isNotEmpty())
+        assertTrue("Second hello must have been received", secondHelloMessages.isNotEmpty())
+
+        @Suppress("UNCHECKED_CAST")
+        val firstHello = gson.fromJson(firstHelloMessages[0], Map::class.java) as Map<String, Any>
+        @Suppress("UNCHECKED_CAST")
+        val secondHello = gson.fromJson(secondHelloMessages[0], Map::class.java) as Map<String, Any>
+
+        assertEquals("hello", firstHello["type"])
+        assertEquals("hello", secondHello["type"])
+
+        val firstClientId = firstHello["clientId"] as String
+        val secondClientId = secondHello["clientId"] as String
+
+        assertNotNull("clientId must be present in first hello", firstClientId)
+        assertNotNull("clientId must be present in second hello", secondClientId)
+
+        // Both must be valid UUIDs — fromString throws IllegalArgumentException if not.
+        java.util.UUID.fromString(firstClientId)
+        java.util.UUID.fromString(secondClientId)
+
+        // The crucial assertion: the SAME transport instance reuses its clientId.
+        assertEquals(
+            "clientId must remain stable across reconnects on the same transport instance",
+            firstClientId,
+            secondClientId
+        )
+    }
 }

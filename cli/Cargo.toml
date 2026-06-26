@@ -1,6 +1,6 @@
 [package]
 name = "devlens"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "DevLens — plugin-based mobile app inspector for debugging AI agents, CLI tool"
 authors = ["Andrey Vladislavov <and.vladislavov@gmail.com>"]

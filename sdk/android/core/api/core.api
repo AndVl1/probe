@@ -63,8 +63,8 @@ public abstract interface class tech/devlens/transport/ProbeTransport {
 
 public final class tech/devlens/transport/WebSocketTransport : tech/devlens/transport/ProbeTransport {
 	public static final field Companion Ltech/devlens/transport/WebSocketTransport$Companion;
-	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;Lokhttp3/OkHttpClient;)V
-	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;Lokhttp3/OkHttpClient;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;Lokhttp3/OkHttpClient;Ljava/lang/String;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;Lokhttp3/OkHttpClient;Ljava/lang/String;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public fun connect ()V
 	public fun disconnect ()V
 	public fun isConnected ()Z

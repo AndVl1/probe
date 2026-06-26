@@ -37,8 +37,10 @@ public final class tech/devlens/network/HttpTransaction {
 
 public final class tech/devlens/network/NetworkPlugin : tech/devlens/ProbePlugin {
 	public fun <init> ()V
+	public fun <init> (J)V
 	public fun <init> (JI)V
-	public synthetic fun <init> (JIILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public fun <init> (JILjava/util/List;)V
+	public synthetic fun <init> (JILjava/util/List;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public final fun clearBuffer ()V
 	public final fun dump (I)Ljava/util/List;
 	public static synthetic fun dump$default (Ltech/devlens/network/NetworkPlugin;IILjava/lang/Object;)Ljava/util/List;
@@ -51,5 +53,21 @@ public final class tech/devlens/network/NetworkPlugin : tech/devlens/ProbePlugin
 }
 
 public final class tech/devlens/network/R {
+}
+
+public final class tech/devlens/network/SanitizeRule {
+	public static final field Companion Ltech/devlens/network/SanitizeRule$Companion;
+	public fun <init> (Lkotlin/text/Regex;Ljava/lang/String;)V
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getLabel ()Ljava/lang/String;
+	public final fun getRegex ()Lkotlin/text/Regex;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class tech/devlens/network/SanitizeRule$Companion {
+	public final fun getBEARER_TOKEN ()Ltech/devlens/network/SanitizeRule;
+	public final fun getEMAIL ()Ltech/devlens/network/SanitizeRule;
+	public final fun getPHONE ()Ltech/devlens/network/SanitizeRule;
 }
 

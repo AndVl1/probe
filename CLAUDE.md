@@ -9,11 +9,23 @@ SDKs connect via WebSocket to the CLI and stream plugin events (network requests
 SDK (client) ──WebSocket JSON──► CLI server (Rust, port 8484)
 ```
 
-- **DevLens CLI** (`cli/`) — Rust/tokio WebSocket server. Receives JSON events, renders terminal UI, optionally saves to JSONL.
+- **DevLens CLI** (`cli/`) — Rust/tokio WebSocket server. By default runs as a **silent agent daemon**: buffers SDK events and exposes them on demand via `devlens dump` (NDJSON over a Unix control socket). `--pretty` opts into the legacy interactive colored stream.
 - **Android SDK** (`sdk/android/`) — Kotlin, Gradle multi-module. The only production-ready SDK.
 - **iOS SDK** (`sdk/ios/`) — Swift Package. Stub: protocol definitions + `HttpTransaction` data model only. No WebSocket transport implemented.
 - **Flutter SDK** (`sdk/flutter/`) — Deferred. Do not touch.
 - **Aurora SDK** (`sdk/aurora/`) — Deferred. Do not touch.
+
+### CLI modes (agent-friendly)
+
+Default (`devlens`, or `devlens serve`) = **silent agent daemon**: the WS server buffers all events in a ring buffer (10k) and writes NOTHING to stdout (logs → stderr). An agent pulls events on demand via ephemeral subcommands over a Unix control socket (`~/.devlens/control.sock`, or `--control-socket` / `DEVLENS_SOCK`):
+
+- `devlens start [--session N]` — begin/reset a capture session (cursor → now).
+- `devlens dump [--session N]` — print buffered events since start/last-dump as NDJSON and advance the cursor. Works without `start` (default session from daemon start). Emits a `{type:gap,dropped:N}` line if the buffer overflowed between dumps.
+- `devlens end [--session N]`, `devlens status`, `devlens shutdown`.
+
+Each NDJSON line is a full event envelope plus CLI-synthesized lifecycle envelopes (`connect` / `hello` / `disconnect` / `gap`) in chronological order. `devlens --pretty` (or `DEVLENS_PRETTY=1`) restores the legacy continuous colored stream for humans. `--save FILE` (JSONL) works in both modes.
+
+**Invariants:** default-mode stdout is NDJSON-only — never log to stdout on the daemon path (use `tracing`/`eprintln!`). The WS protocol and plugin IDs are unchanged; non-interactive is purely CLI-side rendering.
 
 ## Build Commands
 

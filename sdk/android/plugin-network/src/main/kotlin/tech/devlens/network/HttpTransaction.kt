@@ -33,3 +33,37 @@ internal fun HttpTransaction.toPayload(): Map<String, Any?> = mapOf(
     "durationMs" to durationMs,
     "error" to error
 )
+
+/**
+ * Returns a copy of this transaction with sensitive values replaced by masked placeholders.
+ *
+ * Each match is replaced with `[LABEL-hex]` where `hex` is the lowercase hexadecimal
+ * representation of the matched string's hash code — deterministic for the same input.
+ *
+ * Non-maskable fields ([id], [method], [timestamp], [durationMs], [responseCode],
+ * [requestSizeBytes], [responseSizeBytes]) are never modified.
+ *
+ * Returns the same instance when [rules] is empty (zero allocation path).
+ */
+internal fun HttpTransaction.sanitized(rules: List<SanitizeRule>): HttpTransaction {
+    if (rules.isEmpty()) return this
+
+    fun String.mask(): String = rules.fold(this) { text, rule ->
+        rule.regex.replace(text) { match ->
+            "[${rule.label}-${match.value.hashCode().toHexString()}]"
+        }
+    }
+
+    fun Map<String, String>.maskValues(): Map<String, String> =
+        mapValues { (_, v) -> v.mask() }
+
+    return copy(
+        url = url.mask(),
+        requestHeaders = requestHeaders.maskValues(),
+        requestBody = requestBody?.mask(),
+        responseHeaders = responseHeaders.maskValues(),
+        responseBody = responseBody?.mask(),
+        responseMessage = responseMessage?.mask(),
+        error = error?.mask()
+    )
+}

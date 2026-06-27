@@ -128,9 +128,6 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             asset_name: devlens-linux-x86_64
-          - os: macos-13
-            target: x86_64-apple-darwin
-            asset_name: devlens-macos-x86_64
           - os: macos-latest
             target: aarch64-apple-darwin
             asset_name: devlens-macos-aarch64
@@ -212,7 +209,6 @@ jobs:
             --notes-file /tmp/release-notes.md \
             --generate-notes \
             artifacts/devlens-linux-x86_64/devlens-linux-x86_64 \
-            artifacts/devlens-macos-x86_64/devlens-macos-x86_64 \
             artifacts/devlens-macos-aarch64/devlens-macos-aarch64
 
       - name: Create GitHub Release (SDK only, no binaries)
@@ -243,7 +239,6 @@ jobs:
         id: sha
         run: |
           echo "linux_x86_64=$(sha256sum artifacts/devlens-linux-x86_64/devlens-linux-x86_64 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
-          echo "macos_x86_64=$(sha256sum artifacts/devlens-macos-x86_64/devlens-macos-x86_64 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
           echo "macos_aarch64=$(sha256sum artifacts/devlens-macos-aarch64/devlens-macos-aarch64 | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
       - name: Checkout homebrew-tap
@@ -256,7 +251,6 @@ jobs:
       - name: Update formula
         env:
           SHA_LINUX_X86_64: ${{ steps.sha.outputs.linux_x86_64 }}
-          SHA_MACOS_X86_64: ${{ steps.sha.outputs.macos_x86_64 }}
           SHA_MACOS_AARCH64: ${{ steps.sha.outputs.macos_aarch64 }}
         run: |
           cat > homebrew-tap/Formula/devlens.rb << FORMULA
@@ -271,8 +265,7 @@ jobs:
                 url "https://github.com/AndVl1/probe/releases/download/v${VERSION}/devlens-macos-aarch64"
                 sha256 "${SHA_MACOS_AARCH64}"
               else
-                url "https://github.com/AndVl1/probe/releases/download/v${VERSION}/devlens-macos-x86_64"
-                sha256 "${SHA_MACOS_X86_64}"
+                odie "devlens on macOS requires Apple Silicon (arm64). Intel (x86_64) Macs are no longer supported."
               end
             end
 

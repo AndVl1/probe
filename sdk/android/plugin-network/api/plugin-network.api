@@ -50,7 +50,6 @@ public final class tech/devlens/network/NetworkPlugin : tech/devlens/ProbePlugin
 	public final fun interceptor ()Lokhttp3/Interceptor;
 	public fun onAttach (Ltech/devlens/ProbeHost;)V
 	public fun onDetach ()V
-	public fun onQuery (Ltech/devlens/QueryRequest;)V
 }
 
 public final class tech/devlens/network/R {

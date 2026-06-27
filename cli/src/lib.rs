@@ -5,6 +5,7 @@ pub mod control_client;
 pub mod display;
 pub mod filter;
 pub mod protocol;
+pub mod query;
 pub mod server;
 
 use std::path::PathBuf;
@@ -65,6 +66,12 @@ pub struct Args {
     /// Disable colored output (pretty mode only).
     #[arg(long, global = true)]
     pub no_color: bool,
+
+    /// Timeout (milliseconds) for `db` queries forwarded to the SDK. Applies on
+    /// the daemon side (the value active when `devlens serve` started governs
+    /// dispatch; the per-invocation flag is accepted for parsing symmetry).
+    #[arg(long, default_value_t = 10_000, value_name = "MILLIS", global = true)]
+    pub query_timeout_ms: u64,
 }
 
 /// Agent daemon subcommands. `Serve` is the default (bare `devlens`).
@@ -105,6 +112,46 @@ pub enum Command {
 
     /// Shut down a running daemon.
     Shutdown,
+
+    /// On-demand SQLite inspection against the connected device's `database`
+    /// plugin. Dispatched over the WS query/response path to the active SDK.
+    Db {
+        #[command(subcommand)]
+        db: DbCommand,
+    },
+}
+
+/// `devlens db` subcommands. Each maps to a `database` plugin method on the SDK.
+///
+/// Wire method names are protocol-stable (`listDatabases` / `listTables` /
+/// `inspectTable`); the kebab-case CLI spellings are clap's default rename.
+#[derive(Debug, Clone, Subcommand)]
+pub enum DbCommand {
+    /// List databases available to the app (name, path, sizeBytes, encrypted).
+    ListDatabases,
+
+    /// List tables in a database (name + type), excluding SQLite internals.
+    Tables {
+        /// Database file name (as returned by `list-databases`).
+        #[arg(long, value_name = "DATABASE")]
+        database: String,
+    },
+
+    /// Inspect a table: schema (column name/type/notNull/primaryKey) + rows.
+    Inspect {
+        /// Database file name (as returned by `list-databases`).
+        #[arg(long, value_name = "DATABASE")]
+        database: String,
+        /// Table name (as returned by `tables`).
+        #[arg(long, value_name = "TABLE")]
+        table: String,
+        /// Maximum rows to return (default 100).
+        #[arg(long, value_name = "LIMIT", default_value_t = 100)]
+        limit: u32,
+        /// Row offset for pagination (default 0).
+        #[arg(long, value_name = "OFFSET", default_value_t = 0)]
+        offset: u64,
+    },
 }
 
 /// Resolve the daemon control-socket path.

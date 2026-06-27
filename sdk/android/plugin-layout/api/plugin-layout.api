@@ -5,6 +5,7 @@ public final class tech/devlens/layout/LayoutPlugin : tech/devlens/ProbePlugin {
 	public fun getSupportedPlatforms ()Ljava/util/Set;
 	public fun onAttach (Ltech/devlens/ProbeHost;)V
 	public fun onDetach ()V
+	public fun onQuery (Ltech/devlens/QueryRequest;)V
 }
 
 public final class tech/devlens/layout/R {

@@ -2,11 +2,13 @@ package tech.devlens.transport
 
 import android.util.Log
 import com.google.gson.Gson
+import com.google.gson.GsonBuilder
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import tech.devlens.QueryRequest
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -42,6 +44,17 @@ class WebSocketTransport(
 ) : ProbeTransport {
 
     private val gson = Gson()
+    /**
+     * Variant that emits explicit JSON nulls. Used **only** for `queryResult`
+     * payloads (discriminated by `payload["op"] == "queryResult"`, a core-level
+     * marker set by `QueryResult.toPayload()`), where the DoD requires SQL NULL
+     * to serialize as `"col":null` instead of a missing key (Gson's default
+     * drops nulls, which made NULL cells vanish from inspect rows).
+     *
+     * Scoped so network `event` envelopes and the `hello` handshake remain
+     * byte-unchanged — their payloads do not set `op` and keep using [gson].
+     */
+    private val gsonSerializingNulls = GsonBuilder().serializeNulls().create()
     private val queue = LinkedBlockingQueue<String>(MAX_QUEUE_SIZE)
     private val running = AtomicBoolean(false)
     private val connected = AtomicBoolean(false)
@@ -50,7 +63,18 @@ class WebSocketTransport(
     private val reconnectScheduler = ScheduledThreadPoolExecutor(1)
         .also { it.removeOnCancelPolicy = true }
 
+    /**
+     * Receives parsed inbound query frames. Set by [Probe.start] via
+     * [setInboundQueryHandler]. Invoked on OkHttp's dispatch thread.
+     */
+    @Volatile
+    private var inboundHandler: ((QueryRequest) -> Unit)? = null
+
     override val isConnected: Boolean get() = connected.get()
+
+    override fun setInboundQueryHandler(handler: ((QueryRequest) -> Unit)?) {
+        inboundHandler = handler
+    }
 
     override fun connect() {
         if (running.getAndSet(true)) return
@@ -65,7 +89,13 @@ class WebSocketTransport(
             "timestamp" to System.currentTimeMillis(),
             "payload" to payload
         )
-        val json = gson.toJson(envelope)
+        // queryResult payloads carry SQL cell values that may be NULL; the DoD
+        // requires those to serialize as explicit JSON nulls. All other payloads
+        // (network events, hello) keep the default gson so their wire bytes stay
+        // unchanged. See [gsonSerializingNulls] for the full rationale.
+        val serializer =
+            if (payload["op"] == "queryResult") gsonSerializingNulls else gson
+        val json = serializer.toJson(envelope)
         if (!queue.offer(json)) {
             queue.poll() // drop oldest if full
             queue.offer(json)
@@ -90,6 +120,27 @@ class WebSocketTransport(
                 webSocket = ws
                 connected.set(true)
                 ws.send(gson.toJson(buildHello()))
+            }
+
+            override fun onMessage(ws: WebSocket, text: String) {
+                // CLI → SDK query frame. Parse defensively: a malformed frame must
+                // NEVER crash the OkHttp dispatch thread.
+                try {
+                    @Suppress("UNCHECKED_CAST")
+                    val parsed = gson.fromJson(text, Map::class.java) as? Map<String, Any?>
+                        ?: return
+                    if (parsed["type"] != "query") return
+                    @Suppress("UNCHECKED_CAST")
+                    val request = QueryRequest(
+                        requestId = parsed["requestId"] as? String ?: return,
+                        plugin = parsed["plugin"] as? String ?: return,
+                        method = parsed["method"] as? String ?: return,
+                        params = (parsed["params"] as? Map<String, Any?>).orEmpty()
+                    )
+                    inboundHandler?.invoke(request)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Failed to handle inbound query frame: ${t.message}")
+                }
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {

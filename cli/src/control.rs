@@ -44,6 +44,12 @@ pub mod exit {
     pub const EXISTS: u8 = 3;
     /// `serve` when a daemon is already running.
     pub const RUNNING: u8 = 4;
+    /// `db` subcommand: no SDK client connected (or it went away mid-query).
+    pub const NO_CLIENT: u8 = 5;
+    /// `db` subcommand: SDK did not respond within the query timeout.
+    pub const TIMEOUT: u8 = 6;
+    /// `db` subcommand: plugin returned `ok:false` or a malformed response.
+    pub const PLUGIN_ERROR: u8 = 7;
 }
 
 /// Per-session cursor state: `session name -> last-dumped high watermark`.
@@ -76,7 +82,11 @@ pub struct DaemonInfo {
 }
 
 /// Control request envelope (line-delimited JSON from the client).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+///
+/// `Eq` is intentionally NOT derived: the [`Request::Query`] variant carries a
+/// `serde_json::Value` (arbitrary JSON), which is not `Eq` (it may hold
+/// floats). Structural `PartialEq` is sufficient for the round-trip tests.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
     Start {
@@ -95,10 +105,26 @@ pub enum Request {
     },
     Status,
     Shutdown,
+    /// Forward a query to the active SDK client and await its response.
+    /// `op` tag = `"query"`.
+    ///
+    /// `timeout_ms` overrides the daemon-side default query timeout for this
+    /// single invocation when present (`Some`). The control-plane handler
+    /// falls back to the daemon's `--query-timeout-ms` value when `None`.
+    Query {
+        plugin: String,
+        method: String,
+        #[serde(default)]
+        params: serde_json::Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+    },
 }
 
 /// Control response header (line-delimited JSON from the daemon). For `dump`,
-/// the header is followed by `count` raw NDJSON body lines on stdout.
+/// the header is followed by `count` raw NDJSON body lines on stdout. For
+/// [`Response::QueryResult`], the header is followed by exactly 1 NDJSON body
+/// line carrying the query `body` (mirroring the dump header+body pattern).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Response {
@@ -123,6 +149,14 @@ pub enum Response {
         code: u8,
         message: String,
     },
+    /// `db` query result. The header carries `request_id` + `ok`; the `body`
+    /// value is written as 1 NDJSON line immediately after the header. `ok`
+    /// reflects whether the SDK reported success; the client maps the body's
+    /// `code` field (no_client/timeout) or `ok:false` to the exit code.
+    QueryResult {
+        request_id: String,
+        ok: bool,
+    },
 }
 
 // ─── Unix-domain-socket server (unix-only) ──────────────────────────────────
@@ -130,6 +164,8 @@ pub enum Response {
 #[cfg(unix)]
 mod unix {
     use super::*;
+    use crate::query::{ClientRegistry, QueryError};
+    use std::time::Duration;
     use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
     use tokio::net::{UnixListener, UnixStream};
     use tokio::sync::broadcast;
@@ -139,9 +175,11 @@ mod unix {
     pub async fn run_control_listener(
         listener: UnixListener,
         buffer: Arc<EventBuffer>,
+        registry: Arc<ClientRegistry>,
         state: Arc<Mutex<ControlState>>,
         info: Arc<DaemonInfo>,
         shutdown_tx: broadcast::Sender<()>,
+        query_timeout: Duration,
     ) {
         let mut shutdown_rx = shutdown_tx.subscribe();
         loop {
@@ -155,12 +193,14 @@ mod unix {
                     match res {
                         Ok((stream, _peer)) => {
                             let buf = Arc::clone(&buffer);
+                            let reg = Arc::clone(&registry);
                             let st = Arc::clone(&state);
                             let inf = Arc::clone(&info);
                             let stx = shutdown_tx.clone();
+                            let qt = query_timeout;
                             tokio::spawn(async move {
                                 if let Err(e) = handle_control_connection(
-                                    stream, buf, st, inf, stx,
+                                    stream, buf, reg, st, inf, stx, qt,
                                 )
                                 .await
                                 {
@@ -181,9 +221,11 @@ mod unix {
     async fn handle_control_connection(
         stream: UnixStream,
         buffer: Arc<EventBuffer>,
+        registry: Arc<ClientRegistry>,
         state: Arc<Mutex<ControlState>>,
         info: Arc<DaemonInfo>,
         shutdown_tx: broadcast::Sender<()>,
+        query_timeout: Duration,
     ) -> Result<()> {
         let (read_half, mut write_half) = stream.into_split();
         let mut reader = BufReader::new(read_half);
@@ -307,6 +349,72 @@ mod unix {
                 let _ = shutdown_tx.send(());
                 return Ok(());
             }
+            Request::Query { plugin, method, params, timeout_ms } => {
+                // Dispatch to the active SDK client and await its queryResult.
+                // The header carries request_id + ok; `body` is written as 1
+                // NDJSON line after the header. Exit codes are mapped on the
+                // client from (ok, body.code).
+                //
+                // Per-invocation timeout wins over the daemon default so
+                // `devlens db ... --query-timeout-ms N` actually shortens the
+                // wait for that one invocation (M3).
+                let effective_timeout = match timeout_ms {
+                    Some(ms) => Duration::from_millis(ms),
+                    None => query_timeout,
+                };
+                let outcome = registry
+                    .dispatch(&plugin, &method, params, effective_timeout)
+                    .await;
+                let (header, body): (Response, serde_json::Value) = match outcome {
+                    Ok((request_id, payload)) => {
+                        let ok = payload
+                            .get("ok")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        let body = if ok {
+                            payload
+                                .get("result")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null)
+                        } else {
+                            // Plugin error: forward the `error` object verbatim.
+                            payload
+                                .get("error")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null)
+                        };
+                        (Response::QueryResult { request_id, ok }, body)
+                    }
+                    Err(QueryError::NoClient) => (
+                        Response::QueryResult {
+                            request_id: String::new(),
+                            ok: false,
+                        },
+                        serde_json::json!({"code": "no_client"}),
+                    ),
+                    Err(QueryError::ClientGone) => (
+                        // Client disconnected mid-flight — indistinguishable to
+                        // the agent from "no client". Maps to exit NO_CLIENT.
+                        Response::QueryResult {
+                            request_id: String::new(),
+                            ok: false,
+                        },
+                        serde_json::json!({"code": "no_client"}),
+                    ),
+                    Err(QueryError::Timeout) => (
+                        Response::QueryResult {
+                            request_id: String::new(),
+                            ok: false,
+                        },
+                        serde_json::json!({"code": "timeout"}),
+                    ),
+                };
+                write_response(&mut write_half, &header).await?;
+                // Body: exactly 1 NDJSON line (compact JSON via Value::Display).
+                let body_line = body.to_string();
+                write_half.write_all(body_line.as_bytes()).await?;
+                write_half.write_all(b"\n").await?;
+            }
         }
 
         write_half.flush().await?;
@@ -372,6 +480,43 @@ mod tests {
         let s = r#"{"op":"dump","session":"foo"}"#;
         let r: Request = serde_json::from_str(s).unwrap();
         assert_eq!(r, Request::Dump { session: Some("foo".into()) });
+    }
+
+    #[test]
+    fn request_query_roundtrip_omits_null_timeout() {
+        let r = Request::Query {
+            plugin: "database".into(),
+            method: "listDatabases".into(),
+            params: serde_json::json!({}),
+            timeout_ms: None,
+        };
+        let s = serde_json::to_string(&r).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v["op"], "query");
+        assert_eq!(v["plugin"], "database");
+        assert_eq!(v["method"], "listDatabases");
+        assert!(
+            v.get("timeout_ms").is_none(),
+            "None timeout_ms must be skipped; got {}",
+            s
+        );
+        let back: Request = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, r);
+    }
+
+    #[test]
+    fn request_query_roundtrip_with_timeout() {
+        let r = Request::Query {
+            plugin: "database".into(),
+            method: "listTables".into(),
+            params: serde_json::json!({"database": "app.db"}),
+            timeout_ms: Some(500),
+        };
+        let s = serde_json::to_string(&r).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v["timeout_ms"], 500);
+        let back: Request = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, r);
     }
 
     #[test]

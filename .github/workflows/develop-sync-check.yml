@@ -1,0 +1,88 @@
+name: Develop Sync Check
+
+# Enforces the develop-first flow: a PR may land in `main` only if every line
+# of code it introduces is already present in `develop`. Uses a content-based
+# tree-diff (not commit ancestry) so it is robust to develop receiving work via
+# squash / rebase / cherry-pick / merge-commit. Fails (red) and comments on the
+# PR when HEAD adds any content absent from origin/develop.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: develop-sync-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: develop-first
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch develop
+        run: git fetch origin develop --tags
+
+      - name: Verify PR introduces no code absent from develop (release/* exempt)
+        # Content-based (tree-diff) check: PASS iff HEAD adds no line that is
+        # absent from origin/develop. Merge-style-agnostic — survives squash /
+        # rebase / cherry-pick / merge-commit on develop (where original commit
+        # hashes vanish, which would break a strict ancestry check). Deletions
+        # in HEAD (code in develop but not HEAD) are NOT a failure — only
+        # additions matter. release/* head branches are exempt (pass early):
+        # releases flow to main and sync back to develop via release-backmerge.
+        # HEAD_REF is passed via env (not inline `${{ }}`) to prevent script
+        # injection from a malicious branch name (actionlint-mandated).
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$HEAD_REF" == release/* ]]; then
+            echo "develop-sync: release branch '$HEAD_REF' is exempt — releases flow to main and sync to develop via backmerge."
+            exit 0
+          fi
+          HEAD="${{ github.event.pull_request.head.sha }}"
+
+          # `+` lines from the diff = content present in HEAD but not in develop.
+          # Strip the `+++ b/file` headers so only genuine content additions count.
+          # `|| true` so grep's non-match (exit 1) doesn't abort under `set -e`.
+          ADDITIONS=$(git diff origin/develop "$HEAD" -- \
+            | grep -E '^\+' \
+            | grep -vE '^\+\+\+ ' \
+            || true)
+
+          if [ -n "$ADDITIONS" ]; then
+            echo "::error::develop-sync: PR introduces code not present in develop (run \`git diff origin/develop $HEAD\` to see)."
+            exit 1
+          fi
+
+          echo "develop-sync check passed: all code in this PR is already present in develop."
+
+      - name: Comment on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MESSAGE: "🚫 **develop-sync check failed.** This pull request targets `main`, but it introduces code that is not yet in `develop`. Please open a pull request into `develop` first and let it merge, so that `main` only receives code already present in `develop`."
+        run: |
+          MARKER="<!-- devlens-develop-sync -->"
+          BODY="$(printf '%s\n%s' "$MARKER" "$MESSAGE")"
+
+          COMMENT_ID=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+            --jq ".[] | select(.body | contains(\"${MARKER}\")) | .id" | head -1)
+
+          if [ -n "$COMMENT_ID" ]; then
+            gh api "repos/${{ github.repository }}/issues/comments/${COMMENT_ID}" \
+              -X PATCH -f body="$BODY"
+          else
+            gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+              -f body="$BODY"
+          fi

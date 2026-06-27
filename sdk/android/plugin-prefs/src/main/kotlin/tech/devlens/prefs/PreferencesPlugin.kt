@@ -3,6 +3,7 @@ package tech.devlens.prefs
 import tech.devlens.Platform
 import tech.devlens.ProbeHost
 import tech.devlens.ProbePlugin
+import tech.devlens.QueryRequest
 
 /**
  * Probe plugin — reads and watches SharedPreferences (Android) / UserDefaults (iOS).
@@ -42,5 +43,11 @@ class PreferencesPlugin : ProbePlugin {
 
     override fun onDetach() {
         // TODO: unregister change listeners
+    }
+
+    // Push-only plugin. Declared (not inherited) so the BCV public-API signature
+    // is deterministic — see tech.devlens.ProbePlugin.onQuery.
+    override fun onQuery(request: QueryRequest) {
+        // TODO: no query handling planned for preferences
     }
 }

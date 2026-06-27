@@ -17,6 +17,7 @@ package tech.devlens
  *
  *     override fun onAttach(host: ProbeHost) { this.host = host }
  *     override fun onDetach() { host = null }
+ *     override fun onQuery(request: QueryRequest) { /* push-only: ignore */ }
  *
  *     fun sendEvent(data: Map<String, Any?>) {
  *         host?.send(id, data)
@@ -44,20 +45,22 @@ interface ProbePlugin {
     fun onDetach()
 
     /**
-     * Called when the CLI sends a query targeted at this plugin.
+     * Called when the CLI sends a query targeted at this plugin. **Required** —
+     * every plugin overrides it (there is no default). An inherited *default*
+     * method makes the Binary Compatibility Validator signature of an
+     * implementing class nondeterministic (the compiler may or may not emit the
+     * default-method bridge into the class bytecode), which broke release
+     * `apiCheck` (see `fix/bcv-onquery-default-method`). Plugins that do not
+     * handle queries override with an empty body.
      *
      * **CALLED ON THE TRANSPORT THREAD — DO NOT BLOCK.** Implementations must
      * dispatch any long-running work (disk, network) to a background thread and
      * respond asynchronously via [ProbeHost.send] using [QueryResult.toPayload].
      * The transport never awaits a return value here.
      *
-     * Default implementation is a no-op: plugins that do not support queries
-     * (e.g. [tech.devlens.Platform.ANDROID]'s push-only plugins) recompile
-     * unchanged and simply ignore inbound queries.
-     *
      * @param request the inbound query; see [QueryRequest].
      */
-    fun onQuery(request: QueryRequest) {}
+    fun onQuery(request: QueryRequest)
 }
 
 /** Platforms Probe supports. */

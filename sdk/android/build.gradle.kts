@@ -10,41 +10,95 @@ plugins {
 // Note: BCV plugin hooks into kotlin-android for task registration, which AGP 9.0
 // forbids. Root-level aggregate tasks and per-module tasks are wired manually below.
 apiValidation {
-    ignoredProjects += listOf("sample")
+    // sample = demo app ; bom = java-platform artifact (no Kotlin API surface).
+    ignoredProjects += listOf("sample", "bom")
 }
 
 // Modules that are published to Maven Central.
 // "sample" is a demo app and must NOT be published.
-val publishableModules = setOf("core", "plugin-network", "plugin-db", "plugin-prefs", "plugin-layout")
+// "bom" is the java-platform BOM artifact (artifactId = devlens-bom).
+val publishableModules = setOf("core", "plugin-network", "plugin-db", "plugin-prefs", "plugin-layout", "bom")
 
-val versionFromFile = file("../../VERSION").readText().trim()
+// Artifact id overrides — bom publishes as devlens-bom; others use project.name.
+val artifactIdOverrides = mapOf("bom" to "devlens-bom")
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Version source of truth: root /versions.toml (replaces the flat VERSION file).
+// Parsed here (line-based; the file schema is fixed and tiny) and exposed to
+// subprojects via rootProject.extra. Mutated ONLY by scripts/release-plan --apply.
+val parsedVersions: Map<String, String> = run {
+    val versionsFile = file("../../versions.toml")
+    val result = mutableMapOf<String, String>()
+    var section = ""
+    versionsFile.readLines().forEach { rawLine ->
+        val line = rawLine.trim()
+        if (line.startsWith("#") || line.isEmpty()) return@forEach
+        if (line.startsWith("[") && line.endsWith("]")) {
+            section = line.removeSurrounding("[", "]")
+            return@forEach
+        }
+        val eq = line.indexOf('=')
+        if (eq > 0) {
+            val key = line.substring(0, eq).trim()
+            var value = line.substring(eq + 1).trim()
+            value = value.substringAfter('"', value).substringBefore('"', value)
+            // Flatten: [bom].version → "bom" ; [modules].<name> → <name>.
+            val flatKey = when (section) {
+                "bom" -> if (key == "version") "bom" else "$section.$key"
+                "modules" -> key
+                else -> "$section.$key"
+            }
+            result[flatKey] = value
+        }
+    }
+    result
+}
+
+val moduleList = listOf("core", "plugin-network", "plugin-db", "plugin-prefs", "plugin-layout")
+val moduleVersions: Map<String, String> = moduleList.associateWith { parsedVersions[it]!! }
+val bomVersion: String = parsedVersions["bom"]!!
+
+// Expose to subprojects (bom module reads these for its constraints).
+extra["bomVersion"] = bomVersion
+extra["moduleVersions"] = moduleVersions
+
 val isRelease = findProperty("release")?.toString()?.toBoolean() ?: false
 
 subprojects {
     group = "tech.devlens"
-    version = if (isRelease) versionFromFile else "$versionFromFile-SNAPSHOT"
 
-    // Skip publication config for non-library modules (e.g. sample app).
+    // Per-module versioning: each publishable module reads its own version from
+    // versions.toml. sample/bom track the BOM version. A module version may
+    // diverge from its siblings (independent per-module release train).
+    val versionForProject: String = when (name) {
+        "bom", "sample" -> bomVersion
+        else -> moduleVersions[name] ?: bomVersion
+    }
+    version = if (isRelease) versionForProject else "$versionForProject-SNAPSHOT"
+
+    // Skip publication config for non-publishable modules (e.g. sample app).
     if (name !in publishableModules) return@subprojects
 
     apply(plugin = "com.vanniktech.maven.publish")
 
+    val artifactId = artifactIdOverrides[name] ?: name
     val moduleDescription = when (name) {
         "core" -> "DevLens Android SDK — base module with ProbePlugin, ProbeHost, and WebSocketTransport"
         "plugin-network" -> "DevLens Android SDK — network traffic debugging plugin"
         "plugin-db" -> "DevLens Android SDK — database debugging plugin (stub)"
         "plugin-prefs" -> "DevLens Android SDK — SharedPreferences debugging plugin (stub)"
         "plugin-layout" -> "DevLens Android SDK — layout debugging plugin (stub)"
+        "bom" -> "DevLens Android SDK — Bill of Materials"
         else -> "DevLens Android SDK module"
     }
 
     configure<com.vanniktech.maven.publish.MavenPublishBaseExtension> {
         publishToMavenCentral(com.vanniktech.maven.publish.SonatypeHost.CENTRAL_PORTAL)
         signAllPublications()
-        coordinates(group.toString(), project.name, version.toString())
+        coordinates(group.toString(), artifactId, version.toString())
 
         pom {
-            name.set("DevLens ${project.name}")
+            name.set("DevLens $artifactId")
             description.set(moduleDescription)
             url.set("https://github.com/AndVl1/probe")
             licenses {

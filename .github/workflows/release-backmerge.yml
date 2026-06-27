@@ -25,9 +25,9 @@ jobs:
       - name: Read version
         id: version
         run: |
-          VERSION=$(cat VERSION)
+          VERSION=$(./scripts/release-plan --bom-version)
           echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Backmerging v${VERSION} to develop"
+          echo "Backmerging v${VERSION} to develop (from versions.toml [bom])"
 
       - name: Configure git
         run: |

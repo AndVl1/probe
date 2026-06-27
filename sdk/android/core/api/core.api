@@ -45,12 +45,11 @@ public abstract interface class tech/devlens/ProbePlugin {
 	public fun getSupportedPlatforms ()Ljava/util/Set;
 	public abstract fun onAttach (Ltech/devlens/ProbeHost;)V
 	public abstract fun onDetach ()V
-	public fun onQuery (Ltech/devlens/QueryRequest;)V
+	public abstract fun onQuery (Ltech/devlens/QueryRequest;)V
 }
 
 public final class tech/devlens/ProbePlugin$DefaultImpls {
 	public static fun getSupportedPlatforms (Ltech/devlens/ProbePlugin;)Ljava/util/Set;
-	public static fun onQuery (Ltech/devlens/ProbePlugin;Ltech/devlens/QueryRequest;)V
 }
 
 public final class tech/devlens/QueryRequest {

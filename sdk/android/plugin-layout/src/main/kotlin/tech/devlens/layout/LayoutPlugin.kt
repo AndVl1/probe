@@ -3,6 +3,7 @@ package tech.devlens.layout
 import tech.devlens.Platform
 import tech.devlens.ProbeHost
 import tech.devlens.ProbePlugin
+import tech.devlens.QueryRequest
 
 /**
  * Probe plugin — exports the live View/Compose hierarchy as inspectable JSON.
@@ -48,5 +49,12 @@ class LayoutPlugin : ProbePlugin {
 
     override fun onDetach() {
         // TODO: unregister observer
+    }
+
+    // Push-only plugin. Declared (not inherited) so the BCV public-API signature
+    // is deterministic — an inherited default method's bridge is emitted into the
+    // class bytecode nondeterministically and breaks release apiCheck.
+    override fun onQuery(request: QueryRequest) {
+        // TODO: no query handling planned for layout
     }
 }

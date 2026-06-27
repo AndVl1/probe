@@ -1,8 +1,10 @@
 name: Develop Sync Check
 
-# Enforces the develop-first flow: a PR may land in `main` only if its head
-# commit is already reachable from `develop`. Fails (red) and comments on the
-# PR when the PR head is not yet an ancestor of origin/develop.
+# Enforces the develop-first flow: a PR may land in `main` only if every line
+# of code it introduces is already present in `develop`. Uses a content-based
+# tree-diff (not commit ancestry) so it is robust to develop receiving work via
+# squash / rebase / cherry-pick / merge-commit. Fails (red) and comments on the
+# PR when HEAD adds any content absent from origin/develop.
 on:
   pull_request:
     types: [opened, synchronize, reopened]
@@ -29,21 +31,38 @@ jobs:
       - name: Fetch develop
         run: git fetch origin develop --tags
 
-      - name: Verify PR head is an ancestor of develop
+      - name: Verify PR introduces no code absent from develop
+        # Content-based (tree-diff) check: PASS iff HEAD adds no line that is
+        # absent from origin/develop. Merge-style-agnostic — survives squash /
+        # rebase / cherry-pick / merge-commit on develop (where original commit
+        # hashes vanish, which would break a strict ancestry check). Deletions
+        # in HEAD (code in develop but not HEAD) are NOT a failure — only
+        # additions matter.
         run: |
-          if git merge-base --is-ancestor "${{ github.event.pull_request.head.sha }}" origin/develop; then
-            echo "develop-sync check passed: head commit ${{ github.event.pull_request.head.sha }} is an ancestor of origin/develop."
-          else
-            echo "::error::develop-sync check failed: head commit ${{ github.event.pull_request.head.sha }} is NOT an ancestor of origin/develop."
+          set -euo pipefail
+          HEAD="${{ github.event.pull_request.head.sha }}"
+
+          # `+` lines from the diff = content present in HEAD but not in develop.
+          # Strip the `+++ b/file` headers so only genuine content additions count.
+          # `|| true` so grep's non-match (exit 1) doesn't abort under `set -e`.
+          ADDITIONS=$(git diff origin/develop "$HEAD" -- \
+            | grep -E '^\+' \
+            | grep -vE '^\+\+\+ ' \
+            || true)
+
+          if [ -n "$ADDITIONS" ]; then
+            echo "::error::develop-sync: PR introduces code not present in develop (run \`git diff origin/develop $HEAD\` to see)."
             exit 1
           fi
+
+          echo "develop-sync check passed: all code in this PR is already present in develop."
 
       - name: Comment on failure
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          MESSAGE: "🚫 **develop-sync check failed.** This pull request targets `main`, but its head commit is not yet in `develop`. Please open a pull request into `develop` first and let it merge, so that `main` only receives code already present in `develop`."
+          MESSAGE: "🚫 **develop-sync check failed.** This pull request targets `main`, but it introduces code that is not yet in `develop`. Please open a pull request into `develop` first and let it merge, so that `main` only receives code already present in `develop`."
         run: |
           MARKER="<!-- devlens-develop-sync -->"
           BODY="$(printf '%s\n%s' "$MARKER" "$MESSAGE")"

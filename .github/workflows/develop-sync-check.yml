@@ -1,0 +1,60 @@
+name: Develop Sync Check
+
+# Enforces the develop-first flow: a PR may land in `main` only if its head
+# commit is already reachable from `develop`. Fails (red) and comments on the
+# PR when the PR head is not yet an ancestor of origin/develop.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: develop-sync-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: develop-first
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch develop
+        run: git fetch origin develop --tags
+
+      - name: Verify PR head is an ancestor of develop
+        run: |
+          if git merge-base --is-ancestor "${{ github.event.pull_request.head.sha }}" origin/develop; then
+            echo "develop-sync check passed: head commit ${{ github.event.pull_request.head.sha }} is an ancestor of origin/develop."
+          else
+            echo "::error::develop-sync check failed: head commit ${{ github.event.pull_request.head.sha }} is NOT an ancestor of origin/develop."
+            exit 1
+          fi
+
+      - name: Comment on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MESSAGE: "🚫 **develop-sync check failed.** This pull request targets `main`, but its head commit is not yet in `develop`. Please open a pull request into `develop` first and let it merge, so that `main` only receives code already present in `develop`."
+        run: |
+          MARKER="<!-- devlens-develop-sync -->"
+          BODY="$(printf '%s\n%s' "$MARKER" "$MESSAGE")"
+
+          COMMENT_ID=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+            --jq ".[] | select(.body | contains(\"${MARKER}\")) | .id" | head -1)
+
+          if [ -n "$COMMENT_ID" ]; then
+            gh api "repos/${{ github.repository }}/issues/comments/${COMMENT_ID}" \
+              -X PATCH -f body="$BODY"
+          else
+            gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+              -f body="$BODY"
+          fi

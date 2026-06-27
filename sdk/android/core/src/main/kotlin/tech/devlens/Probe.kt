@@ -1,10 +1,7 @@
 package tech.devlens
 
-import android.util.Log
 import tech.devlens.transport.ProbeTransport
 import tech.devlens.transport.WebSocketTransport
-
-private const val TAG = "Probe"
 
 /**
  * Probe — plugin-based mobile app inspector.
@@ -49,45 +46,14 @@ class Probe private constructor(
         transport.send(pluginId, payload)
     }
 
-    /** Plugins keyed by [ProbePlugin.id] for inbound query routing. */
-    private val pluginsById: Map<String, ProbePlugin> by lazy {
-        plugins.associateBy { it.id }
-    }
-
     private fun start() {
-        // Wire the inbound (CLI → SDK) query path. Soft cast keeps non-WebSocket
-        // transports working unchanged.
-        (transport as? WebSocketTransport)?.setInboundQueryHandler(::handleInbound)
         transport.connect()
         plugins.forEach { it.onAttach(this) }
     }
 
     private fun stop() {
         plugins.forEach { it.onDetach() }
-        (transport as? WebSocketTransport)?.setInboundQueryHandler(null)
         transport.disconnect()
-    }
-
-    /**
-     * Routes an inbound [QueryRequest] (delivered on the transport thread) to the
-     * matching plugin's [ProbePlugin.onQuery]. Unknown plugins get an
-     * `unknown_plugin` error response so the CLI's pending request never hangs.
-     */
-    private fun handleInbound(request: QueryRequest) {
-        val plugin = pluginsById[request.plugin]
-        if (plugin != null) {
-            plugin.onQuery(request) // plugin self-dispatches async + responds via send()
-        } else {
-            Log.w(TAG, "Query for unknown plugin '${request.plugin}'")
-            send(
-                request.plugin,
-                QueryResult.Error(
-                    requestId = request.requestId,
-                    code = "unknown_plugin",
-                    message = "No plugin registered for id '${request.plugin}'"
-                ).toPayload()
-            )
-        }
     }
 
     // ── Builder ─────────────────────────────────────────────────────────────

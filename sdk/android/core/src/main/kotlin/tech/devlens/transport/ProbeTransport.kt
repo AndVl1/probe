@@ -1,7 +1,5 @@
 package tech.devlens.transport
 
-import tech.devlens.QueryRequest
-
 /**
  * Transport layer — responsible for the physical connection between the SDK and CLI.
  *
@@ -34,14 +32,4 @@ interface ProbeTransport {
 
     /** Whether the transport is currently connected. */
     val isConnected: Boolean
-
-    /**
-     * Installs a handler for inbound queries from the CLI. The handler is invoked
-     * on the transport's receive thread — implementations/callers must not block
-     * it (see [tech.devlens.ProbePlugin.onQuery]). Pass `null` to clear.
-     *
-     * Default implementation is a no-op: transports without an inbound path (or
-     * custom transports that do not support queries) are unaffected.
-     */
-    fun setInboundQueryHandler(handler: ((QueryRequest) -> Unit)?) {}
 }

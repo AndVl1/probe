@@ -9,27 +9,6 @@ pub enum Message {
     Transaction(HttpTransaction),
     /// Current SDK wire format: {"type":"event","plugin":"network","timestamp":...,"payload":{...}}
     Event(EventMessage),
-    /// CLI→SDK on-demand query (bidirectional query/response extension).
-    ///
-    /// Wire shape: `{"type":"query","requestId":"q-N","plugin":"database",
-    /// "method":"listDatabases","params":{}}`. Responses ride back as a normal
-    /// [`Message::Event`] whose payload carries `op:"queryResult"` — there is no
-    /// inbound `Query` reply variant on the wire.
-    Query(QueryMessage),
-}
-
-/// CLI→SDK query frame. Tagged `{"type":"query",...}` on the wire.
-///
-/// `params` defaults to [`serde_json::Value::Null`] when absent so a query with
-/// no parameters (`listDatabases`) need not send `"params":{}`.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct QueryMessage {
-    pub request_id: String,
-    pub plugin: String,
-    pub method: String,
-    #[serde(default)]
-    pub params: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -190,97 +169,6 @@ mod tests {
             }
             other => panic!("expected Event, got {:?}", other),
         }
-    }
-
-    // ── Message::Query (CLI→SDK) ──────────────────────────────────────────────
-
-    #[test]
-    fn deserialize_query_list_databases() {
-        let json = r#"{
-            "type": "query",
-            "requestId": "q-1",
-            "plugin": "database",
-            "method": "listDatabases",
-            "params": {}
-        }"#;
-        let msg: Message = serde_json::from_str(json).expect("should deserialize");
-        match msg {
-            Message::Query(q) => {
-                assert_eq!(q.request_id, "q-1");
-                assert_eq!(q.plugin, "database");
-                assert_eq!(q.method, "listDatabases");
-                assert_eq!(q.params, serde_json::json!({}));
-            }
-            other => panic!("expected Query, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn deserialize_query_inspect_table_with_params() {
-        let json = r#"{
-            "type": "query",
-            "requestId": "q-3",
-            "plugin": "database",
-            "method": "inspectTable",
-            "params": {"database": "app.db", "table": "users", "limit": 100, "offset": 0}
-        }"#;
-        let msg: Message = serde_json::from_str(json).expect("should deserialize");
-        match msg {
-            Message::Query(q) => {
-                assert_eq!(q.method, "inspectTable");
-                assert_eq!(q.params["database"], "app.db");
-                assert_eq!(q.params["table"], "users");
-                assert_eq!(q.params["limit"], 100);
-                assert_eq!(q.params["offset"], 0);
-            }
-            other => panic!("expected Query, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn deserialize_query_params_defaults_to_null_when_absent() {
-        // #[serde(default)] → missing params yields Value::Null (not an error).
-        let json = r#"{"type":"query","requestId":"q-9","plugin":"database","method":"listDatabases"}"#;
-        let msg: Message = serde_json::from_str(json).expect("should deserialize");
-        match msg {
-            Message::Query(q) => assert!(q.params.is_null(), "missing params default to null"),
-            other => panic!("expected Query, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn query_message_roundtrip_preserves_wire_shape() {
-        let original = QueryMessage {
-            request_id: "q-42".into(),
-            plugin: "database".into(),
-            method: "listTables".into(),
-            params: serde_json::json!({"database": "app.db"}),
-        };
-        let s = serde_json::to_string(&original).expect("serialize");
-        // Wire keys must be camelCase; tag is added by the Message enum, not here.
-        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
-        assert_eq!(v["requestId"], "q-42");
-        assert_eq!(v["plugin"], "database");
-        assert_eq!(v["method"], "listTables");
-        assert_eq!(v["params"]["database"], "app.db");
-
-        let restored: QueryMessage = serde_json::from_str(&s).expect("deserialize");
-        assert_eq!(restored.request_id, original.request_id);
-        assert_eq!(restored.plugin, original.plugin);
-        assert_eq!(restored.method, original.method);
-        assert_eq!(restored.params, original.params);
-    }
-
-    #[test]
-    fn message_query_tag_is_lowercase_query() {
-        let m = Message::Query(QueryMessage {
-            request_id: "q-1".into(),
-            plugin: "database".into(),
-            method: "listDatabases".into(),
-            params: serde_json::json!({}),
-        });
-        let v: serde_json::Value = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
-        assert_eq!(v["type"], "query");
     }
 
     // ── Message::Transaction (legacy) ─────────────────────────────────────────

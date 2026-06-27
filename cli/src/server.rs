@@ -1,12 +1,9 @@
 use std::fs::OpenOptions;
 use std::io::Write as IoWrite;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 use anyhow::Result;
 use futures_util::{StreamExt, SinkExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tracing::{error, info, warn};
@@ -20,17 +17,7 @@ use crate::control_client;
 use crate::display::Displayer;
 use crate::filter::Filter;
 use crate::protocol::{HelloMessage, Message};
-use crate::query::ClientRegistry;
 use crate::{Args, Command, DEFAULT_BUFFER_CAPACITY};
-
-/// Monotonic connection-id generator. Each accepted WS handshake gets a fresh
-/// `conn_id` so the [`ClientRegistry`] can distinguish a stale disconnect from
-/// a newer connection's active registration.
-static CONN_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
-
-fn next_conn_id() -> u64 {
-    CONN_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
-}
 
 pub async fn run_server(args: Arc<Args>) -> Result<()> {
     let addr = format!("0.0.0.0:{}", args.port);
@@ -61,11 +48,6 @@ pub async fn run_server(args: Arc<Args>) -> Result<()> {
     // Ring buffer of recent events (CLI cap: 10_000 entries, FIFO eviction).
     let buffer = Arc::new(EventBuffer::new(DEFAULT_BUFFER_CAPACITY));
 
-    // Active SDK client + pending query map. Threaded into both the WS serve
-    // path (so inbound queryResult Events route to the dispatcher) and the
-    // control plane (so `devlens db ...` can dispatch a Query to the SDK).
-    let registry = Arc::new(ClientRegistry::new());
-
     // Optional JSONL save file — opened once, shared across connections
     let save_file: Option<Arc<Mutex<std::fs::File>>> = if let Some(path) = args.save.as_ref() {
         let file = OpenOptions::new()
@@ -86,12 +68,7 @@ pub async fn run_server(args: Arc<Args>) -> Result<()> {
     // loop below selects on shutdown so `devlens shutdown` / SIGTERM / SIGINT
     // bring the daemon down cleanly.
     #[cfg(unix)]
-    let mut ctrl = setup_control_plane(
-        &args,
-        Arc::clone(&buffer),
-        Arc::clone(&registry),
-        bound_port,
-    )?;
+    let mut ctrl = setup_control_plane(&args, Arc::clone(&buffer), bound_port)?;
 
     loop {
         // Accept with optional shutdown racing (unix only).
@@ -117,7 +94,6 @@ pub async fn run_server(args: Arc<Args>) -> Result<()> {
                 let filter_clone = Arc::clone(&filter);
                 let buffer_clone = Arc::clone(&buffer);
                 let save_file_clone = save_file.clone();
-                let registry_clone = Arc::clone(&registry);
                 tokio::spawn(async move {
                     if let Err(e) = handle_connection(
                         stream,
@@ -126,7 +102,6 @@ pub async fn run_server(args: Arc<Args>) -> Result<()> {
                         filter_clone,
                         buffer_clone,
                         save_file_clone,
-                        registry_clone,
                     )
                     .await
                     {
@@ -168,40 +143,8 @@ pub async fn run_control_subcommand(args: &Args, command: Command) -> Result<u8>
         Command::Shutdown => crate::control::Request::Shutdown,
         // Serve is handled by run_server, not here.
         Command::Serve => unreachable!("serve is not a control subcommand"),
-        Command::Db { db } => map_db_command(db, args.query_timeout_ms),
     };
     control_client::run_command(&socket, request).await
-}
-
-/// Map a [`DbCommand`] into a control-plane [`Request::Query`] with the
-/// contract method name and params. `plugin` is always `"database"`
-/// (protocol-stable plugin id). The caller's per-invocation
-/// `query_timeout_ms` is threaded through as `Request::Query::timeout_ms` so
-/// the daemon honors it for this single dispatch (M3).
-#[cfg(unix)]
-fn map_db_command(db: crate::DbCommand, query_timeout_ms: u64) -> crate::control::Request {
-    use crate::DbCommand;
-    let (method, params) = match db {
-        DbCommand::ListDatabases => ("listDatabases", serde_json::json!({})),
-        DbCommand::Tables { database } => {
-            ("listTables", serde_json::json!({"database": database}))
-        }
-        DbCommand::Inspect { database, table, limit, offset } => (
-            "inspectTable",
-            serde_json::json!({
-                "database": database,
-                "table": table,
-                "limit": limit,
-                "offset": offset,
-            }),
-        ),
-    };
-    crate::control::Request::Query {
-        plugin: "database".to_string(),
-        method: method.to_string(),
-        params,
-        timeout_ms: Some(query_timeout_ms),
-    }
 }
 
 /// Owned handles from the control-plane setup so the accept loop can select on
@@ -225,12 +168,7 @@ impl ControlHandle {
 /// listener + signal handler. Returns the handle the caller uses to select on
 /// shutdown.
 #[cfg(unix)]
-fn setup_control_plane(
-    args: &Args,
-    buffer: Arc<EventBuffer>,
-    registry: Arc<ClientRegistry>,
-    bound_port: u16,
-) -> Result<ControlHandle> {
+fn setup_control_plane(args: &Args, buffer: Arc<EventBuffer>, bound_port: u16) -> Result<ControlHandle> {
     let socket_path = crate::resolve_socket_path(args);
 
     // Liveness probe: if the socket file exists, try to talk to whatever owns
@@ -319,16 +257,7 @@ fn setup_control_plane(
         let st = Arc::clone(&state);
         let inf = Arc::clone(&info);
         let stx = shutdown_tx.clone();
-        let query_timeout = Duration::from_millis(args.query_timeout_ms);
-        tokio::spawn(run_control_listener(
-            ctrl_listener,
-            buffer,
-            registry,
-            st,
-            inf,
-            stx,
-            query_timeout,
-        ));
+        tokio::spawn(run_control_listener(ctrl_listener, buffer, st, inf, stx));
     }
 
     // Signal handler task: SIGTERM / SIGINT -> broadcast shutdown + cleanup.
@@ -373,7 +302,6 @@ pub async fn handle_connection(
     filter: Arc<Filter>,
     buffer: Arc<EventBuffer>,
     save_file: Option<Arc<Mutex<std::fs::File>>>,
-    registry: Arc<ClientRegistry>,
 ) -> Result<()> {
     // Capture peer address before the stream is moved into accept_async.
     let peer = stream
@@ -382,24 +310,7 @@ pub async fn handle_connection(
         .unwrap_or_else(|_| "unknown".to_string());
 
     let ws_stream = accept_async(stream).await?;
-    let (write, mut read) = ws_stream.split();
-    let conn_id = next_conn_id();
-
-    // Writer task: owns the SplitSink and drains a bounded mpsc channel,
-    // serializing ALL outbound WS frames (Pong + Query). This avoids sharing
-    // the sink between the reader loop (Pong) and the dispatcher (Query) and
-    // keeps every write single-threaded relative to the connection.
-    let (writer_tx, mut writer_rx) = mpsc::channel::<WsMessage>(16);
-    tokio::spawn(async move {
-        let mut write = write;
-        while let Some(frame) = writer_rx.recv().await {
-            if write.send(frame).await.is_err() {
-                break;
-            }
-        }
-        // Best-effort clean close once the channel drains/closes.
-        let _ = write.close().await;
-    });
+    let (mut write, mut read) = ws_stream.split();
 
     // Lifecycle: record the WS handshake. Always buffered (agent-visible).
     buffer.push(crate::protocol::lifecycle::connect(
@@ -419,8 +330,10 @@ pub async fn handle_connection(
                 Err(_) => { warn!("Received non-UTF8 binary message, ignoring"); continue; }
             },
             Ok(WsMessage::Ping(data)) => {
-                // Forward to the writer task so Pong + Query writes serialize.
-                let _ = writer_tx.send(WsMessage::Pong(data)).await;
+                if let Err(e) = write.send(WsMessage::Pong(data)).await {
+                    warn!("Failed to send pong: {}", e);
+                    break;
+                }
                 continue;
             }
             Ok(WsMessage::Close(_)) => { info!("Client sent close frame"); break; }
@@ -440,10 +353,6 @@ pub async fn handle_connection(
                 if let Some(d) = displayer.as_ref() {
                     d.print_connected(&h);
                 }
-                // Register as the active query client (latest hello wins).
-                // Clone the writer sender so the dispatcher can push Query
-                // frames through the same serialized writer path.
-                registry.register(conn_id, writer_tx.clone());
                 hello = Some(h);
             }
             Ok(Message::Transaction(tx)) => {
@@ -465,38 +374,18 @@ pub async fn handle_connection(
                 }
             }
             Ok(Message::Event(event)) => {
-                // Route queryResult responses to the dispatcher and SKIP
-                // buffering: an agent fetches query results via the `db`
-                // subcommand, and buffering them would pollute `devlens dump`.
-                let is_query_result = event
-                    .payload
-                    .get("op")
-                    .and_then(|v| v.as_str())
-                    == Some("queryResult");
-                if is_query_result {
-                    if let Some(req_id) =
-                        event.payload.get("requestId").and_then(|v| v.as_str())
-                    {
-                        registry.route_response(req_id, event.payload.clone());
-                    }
-                    continue;
-                }
-
-                // GENERALIZED buffering: every non-queryResult Event reaches the
-                // ring buffer + save file regardless of plugin id. Network
-                // remains the only plugin with typed extraction/filter/display.
-                if let Ok(raw) = serde_json::from_str::<serde_json::Value>(&text) {
-                    buffer.push(raw.clone());
-                    if let Some(ref file_mutex) = save_file {
-                        if let Ok(mut file) = file_mutex.lock() {
-                            let _ = writeln!(file, "{}", raw);
+                if event.plugin == "network" {
+                    // Store the full raw envelope in the ring buffer
+                    if let Ok(raw) = serde_json::from_str::<serde_json::Value>(&text) {
+                        buffer.push(raw.clone());
+                        if let Some(ref file_mutex) = save_file {
+                            if let Ok(mut file) = file_mutex.lock() {
+                                let _ = writeln!(file, "{}", raw);
+                            }
                         }
                     }
-                }
-                if event.plugin == "network" {
-                    match serde_json::from_value::<crate::protocol::HttpTransaction>(
-                        event.payload.clone(),
-                    ) {
+                    // Extract HttpTransaction from payload for filtering and display
+                    match serde_json::from_value::<crate::protocol::HttpTransaction>(event.payload) {
                         Ok(tx) => {
                             if filter.matches(&tx) {
                                 if let Some(d) = displayer.as_ref() {
@@ -508,24 +397,15 @@ pub async fn handle_connection(
                             warn!("Failed to parse network payload as HttpTransaction: {}", e);
                         }
                     }
+                } else {
+                    info!("Received event for unknown plugin: {}", event.plugin);
                 }
-            }
-            Ok(Message::Query(_)) => {
-                // Inbound Query (CLI→SDK direction) from a client is unexpected —
-                // the CLI is the query originator. Ignore rather than crash.
-                warn!("Received unexpected inbound Query frame; ignoring");
             }
             Err(e) => {
                 warn!("Failed to parse message: {} | raw: {}", e, &text[..text.len().min(200)]);
             }
         }
     }
-
-    // Disconnect: drop the registry's sender (only if conn_id still matches so
-    // a newer connection survives), then drop this loop's sender so the writer
-    // task drains and exits.
-    registry.unregister(conn_id);
-    drop(writer_tx);
 
     // Lifecycle: record disconnect (always, even if no hello was sent).
     buffer.push(crate::protocol::lifecycle::disconnect(

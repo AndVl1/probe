@@ -19,11 +19,9 @@ use devlens::buffer::EventBuffer;
 use devlens::control::{
     ControlState, DaemonInfo, Request, Response, run_control_listener,
 };
-use devlens::query::ClientRegistry;
 
 struct Harness {
     buffer: Arc<EventBuffer>,
-    registry: Arc<ClientRegistry>,
     socket: std::path::PathBuf,
     _shutdown_tx: broadcast::Sender<()>,
     _dir: tempfile::TempDir,
@@ -37,7 +35,6 @@ async fn harness(capacity: usize) -> Harness {
     let socket = dir.path().join("ctrl.sock");
     let listener = UnixListener::bind(&socket).expect("bind");
     let buffer = Arc::new(EventBuffer::new(capacity));
-    let registry = Arc::new(ClientRegistry::new());
     let state = Arc::new(Mutex::new(ControlState::with_default_cursor(
         buffer.high_watermark(),
     )));
@@ -49,22 +46,12 @@ async fn harness(capacity: usize) -> Harness {
     });
     let (shutdown_tx, _) = broadcast::channel::<()>(8);
     {
-        let (buf, reg, st, inf) = (
-            Arc::clone(&buffer),
-            Arc::clone(&registry),
-            Arc::clone(&state),
-            Arc::clone(&info),
-        );
+        let (buf, st, inf) = (Arc::clone(&buffer), Arc::clone(&state), Arc::clone(&info));
         let stx = shutdown_tx.clone();
-        // Match the production query timeout (Args default).
-        let query_timeout = std::time::Duration::from_millis(10_000);
-        tokio::spawn(async move {
-            run_control_listener(listener, buf, reg, st, inf, stx, query_timeout).await;
-        });
+        tokio::spawn(async move { run_control_listener(listener, buf, st, inf, stx).await; });
     }
     Harness {
         buffer,
-        registry,
         socket,
         _shutdown_tx: shutdown_tx,
         _dir: dir,
@@ -333,29 +320,17 @@ async fn status_reports_daemon_info_and_sessions() {
 
 #[tokio::test]
 async fn shutdown_brings_down_the_control_listener() {
-    use std::time::Instant;
-
     let h = harness(100).await;
     let (resp, _) = request(&h.socket, &Request::Shutdown).await;
     assert!(matches!(resp, Response::Ok { .. }));
 
-    // Poll for the listener going away rather than a fixed sleep: the
-    // listener task observes the shutdown broadcast asynchronously, so the
-    // UnixListener may survive a few more scheduler ticks. Retry connect
-    // until it fails (listener gone) or a ~2s deadline (L1).
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let gone = loop {
-        if UnixStream::connect(&h.socket).await.is_err() {
-            break true;
-        }
-        if Instant::now() > deadline {
-            break false;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    };
+    // Give the listener task a moment to observe the broadcast and drop the
+    // UnixListener, after which new connects must fail.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let reconnect = UnixStream::connect(&h.socket).await;
     assert!(
-        gone,
-        "listener should be gone after shutdown; connect must fail within 2s"
+        reconnect.is_err(),
+        "listener should be gone after shutdown; connect must fail"
     );
 }
 
@@ -394,175 +369,6 @@ async fn control_client_run_command_translates_exit_codes() {
         .await
         .expect("client ok");
     assert_eq!(code, devlens::control::exit::OK);
-}
-
-// ── query path (db subcommands) over the control plane ──────────────────────
-//
-// Exercises the Request::Query → Response::QueryResult arm of the control
-// listener with a mocked SDK client (no real WebSocket). A round-trip test
-// against the real binary lives in tests/e2e.rs.
-
-/// Send a request, read the typed header. For `QueryResult`, also read exactly
-/// 1 body line and return it parsed.
-async fn request_with_body(
-    socket: &std::path::Path,
-    req: &Request,
-) -> (Response, Option<serde_json::Value>) {
-    let mut stream = UnixStream::connect(socket).await.expect("connect");
-    let line = serde_json::to_string(req).expect("serialize request");
-    stream.write_all(line.as_bytes()).await.expect("write req");
-    stream.write_all(b"\n").await.expect("write newline");
-    stream.flush().await.expect("flush");
-
-    let mut reader = BufReader::new(stream);
-    let mut header = String::new();
-    reader.read_line(&mut header).await.expect("read header");
-    let resp: Response = serde_json::from_str(header.trim()).expect("parse header");
-
-    let body = match &resp {
-        Response::QueryResult { .. } => {
-            let mut l = String::new();
-            reader.read_line(&mut l).await.expect("read body line");
-            Some(serde_json::from_str(l.trim()).expect("body is JSON"))
-        }
-        _ => None,
-    };
-    (resp, body)
-}
-
-#[tokio::test]
-async fn query_with_no_client_returns_no_client_body() {
-    let h = harness(100).await;
-    // No SDK client registered.
-    let (resp, body) = request_with_body(
-        &h.socket,
-        &Request::Query {
-            plugin: "database".into(),
-            method: "listDatabases".into(),
-            params: json!({}),
-            timeout_ms: None,
-        },
-    )
-    .await;
-    match resp {
-        Response::QueryResult { request_id: _, ok } => {
-            assert!(!ok, "no-client query is not ok");
-            let body = body.expect("query_result has a body line");
-            assert_eq!(body["code"], "no_client");
-        }
-        other => panic!("expected QueryResult, got {:?}", other),
-    }
-}
-
-#[tokio::test]
-async fn query_round_trips_through_control_plane_with_mock_sdk() {
-    use tokio::sync::mpsc;
-    use tokio_tungstenite::tungstenite::Message as WsMessage;
-
-    let h = harness(100).await;
-
-    // Register a mock SDK client: read the Query frame and route a queryResult
-    // back through the SAME registry the control listener uses.
-    let (tx, mut rx) = mpsc::channel::<WsMessage>(4);
-    h.registry.register(1, tx);
-    let reg = h.registry.clone();
-    let mock = tokio::spawn(async move {
-        let frame = rx.recv().await.expect("query frame received");
-        let text = match frame {
-            WsMessage::Text(t) => t,
-            other => panic!("expected Text, got {:?}", other),
-        };
-        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(v["type"], "query");
-        assert_eq!(v["method"], "listDatabases");
-        let req_id = v["requestId"].as_str().unwrap().to_string();
-        reg.route_response(
-            &req_id,
-            json!({
-                "op": "queryResult",
-                "requestId": req_id,
-                "ok": true,
-                "result": {"databases": [{"name": "app.db"}]},
-            }),
-        );
-    });
-
-    let (resp, body) = request_with_body(
-        &h.socket,
-        &Request::Query {
-            plugin: "database".into(),
-            method: "listDatabases".into(),
-            params: json!({}),
-            timeout_ms: None,
-        },
-    )
-    .await;
-    match resp {
-        Response::QueryResult { request_id, ok } => {
-            assert!(ok, "successful query is ok");
-            assert!(request_id.starts_with("q-"), "requestId populated: {}", request_id);
-            let body = body.expect("body line");
-            assert_eq!(body["databases"][0]["name"], "app.db");
-        }
-        other => panic!("expected QueryResult, got {:?}", other),
-    }
-    mock.await.unwrap();
-}
-
-#[tokio::test]
-async fn query_timeout_surfaces_as_code_timeout_through_control_plane() {
-    // H1: a per-invocation timeout flows through the control plane and surfaces
-    // as Response::QueryResult{ok:false} with a body of {"code":"timeout"}.
-    // The mock SDK reads the Query frame but never sends a queryResult, so the
-    // dispatcher's timeout fires (much shorter than the daemon default via
-    // Request::Query::timeout_ms).
-    use tokio::sync::mpsc;
-    use tokio_tungstenite::tungstenite::Message as WsMessage;
-
-    let h = harness(100).await;
-
-    // Register a mock SDK client that swallows the Query frame and stays silent.
-    let (tx, mut rx) = mpsc::channel::<WsMessage>(4);
-    h.registry.register(1, tx);
-    let mock = tokio::spawn(async move {
-        // Drain the Query frame so the channel doesn't fill up and break the
-        // dispatcher's send (which would surface as ClientGone instead of
-        // Timeout). Critically, we do NOT call route_response.
-        while rx.recv().await.is_some() {}
-    });
-
-    let started = std::time::Instant::now();
-    let (resp, body) = request_with_body(
-        &h.socket,
-        &Request::Query {
-            plugin: "database".into(),
-            method: "listDatabases".into(),
-            params: json!({}),
-            // Per-invocation override (M3): a short 300ms instead of the
-            // 10s daemon default. The harness wires the daemon default, but
-            // the request-level value must win.
-            timeout_ms: Some(300),
-        },
-    )
-    .await;
-    let elapsed = started.elapsed();
-
-    match resp {
-        Response::QueryResult { request_id: _, ok } => {
-            assert!(!ok, "timed-out query is not ok");
-            let body = body.expect("timeout carries a body line");
-            assert_eq!(body["code"], "timeout", "body={}", body);
-        }
-        other => panic!("expected QueryResult, got {:?}", other),
-    }
-    // Sanity: the per-invocation timeout fired well under the 10s daemon
-    // default (so M3's override actually took effect).
-    assert!(
-        elapsed < std::time::Duration::from_secs(2),
-        "per-invocation timeout should fire fast; elapsed={:?}",
-        elapsed,
-    );
-    drop(mock);
 }
 
 // ── end-to-end smoke: real `devlens` binary ─────────────────────────────────

@@ -87,35 +87,6 @@ pub async fn run_command(socket_path: &Path, request: Request) -> Result<u8> {
             eprintln!("devlens: '{}' failed: {}", op, message);
             Ok(code)
         }
-        Response::QueryResult { request_id: _, ok } => {
-            // Exactly 1 NDJSON body line follows the header (compact JSON).
-            let mut line = String::new();
-            if reader.read_line(&mut line).await? == 0 {
-                anyhow::bail!("daemon closed the connection before the query result body");
-            }
-            // Print the body as a single NDJSON line on stdout (agent path).
-            let trimmed = line.trim_end_matches(['\n', '\r']);
-            out.write_all(trimmed.as_bytes())?;
-            out.write_all(b"\n")?;
-            out.flush()?;
-
-            if ok {
-                return Ok(exit::OK);
-            }
-            // Failure: map the body's `code` to the contract exit code.
-            let body: serde_json::Value = serde_json::from_str(trimmed)
-                .unwrap_or(serde_json::Value::Null);
-            let code = body
-                .get("code")
-                .and_then(|v| v.as_str())
-                .map(|c| match c {
-                    "no_client" => exit::NO_CLIENT,
-                    "timeout" => exit::TIMEOUT,
-                    _ => exit::PLUGIN_ERROR,
-                })
-                .unwrap_or(exit::PLUGIN_ERROR);
-            Ok(code)
-        }
     }
 }
 

@@ -31,15 +31,24 @@ jobs:
       - name: Fetch develop
         run: git fetch origin develop --tags
 
-      - name: Verify PR introduces no code absent from develop
+      - name: Verify PR introduces no code absent from develop (release/* exempt)
         # Content-based (tree-diff) check: PASS iff HEAD adds no line that is
         # absent from origin/develop. Merge-style-agnostic — survives squash /
         # rebase / cherry-pick / merge-commit on develop (where original commit
         # hashes vanish, which would break a strict ancestry check). Deletions
         # in HEAD (code in develop but not HEAD) are NOT a failure — only
-        # additions matter.
+        # additions matter. release/* head branches are exempt (pass early):
+        # releases flow to main and sync back to develop via release-backmerge.
+        # HEAD_REF is passed via env (not inline `${{ }}`) to prevent script
+        # injection from a malicious branch name (actionlint-mandated).
+        env:
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           set -euo pipefail
+          if [[ "$HEAD_REF" == release/* ]]; then
+            echo "develop-sync: release branch '$HEAD_REF' is exempt — releases flow to main and sync to develop via backmerge."
+            exit 0
+          fi
           HEAD="${{ github.event.pull_request.head.sha }}"
 
           # `+` lines from the diff = content present in HEAD but not in develop.

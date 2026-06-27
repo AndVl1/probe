@@ -73,7 +73,7 @@ Core external deps: OkHttp 5.4.0, Gson 2.11.0. No other external deps in SDK mod
 
 ## WebSocket Protocol
 
-All messages are UTF-8 JSON. The **push flow is unidirectional (SDK → CLI)**: `hello` on connect and `event` envelopes per plugin event. **Query/response is bidirectional** for query-capable plugins: the CLI sends a `{type:query}` request (`devlens db …`) over the WS write half and the SDK answers via a normal `event` envelope whose `payload.op == "queryResult"`, correlated by `requestId`. Push-only plugins (e.g. `network`) are unaffected.
+All messages are UTF-8 JSON. Flow is unidirectional: SDK → CLI.
 
 ### Hello (sent once on connect)
 
@@ -118,7 +118,6 @@ All messages are UTF-8 JSON. The **push flow is unidirectional (SDK → CLI)**: 
 4. **Auto-reconnect at 3s.** Transport retries indefinitely. No user action needed.
 5. **Plugin IDs are protocol-stable.** `ProbePlugin.id` appears in every event message. Changing it after publishing is a breaking change.
 6. **Debug-only.** Guard `Probe.install()` with `BuildConfig.DEBUG` (Android) or `#if DEBUG` (iOS). Never ship DevLens in release builds.
-7. **Query/response is bidirectional; push is not.** A query-capable plugin overrides the default `onQuery(QueryRequest)` (additive — push plugins ignore it). The CLI `devlens db …` subcommands send `{type:query}` and await a correlated `queryResult` event (single active debug client assumed in v1). Query responses are routed to the requester and are **not** buffered into `devlens dump` (only genuine push events are).
 
 ## Conventions
 

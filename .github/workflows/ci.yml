@@ -98,6 +98,16 @@ jobs:
           if ! git rebase "origin/${{ github.event.pull_request.base.ref }}"; then
             git rebase --abort
             echo "conflict=true" >> "$GITHUB_OUTPUT"
+            # "Detect API changes" is skipped on conflict, so it never writes
+            # /tmp/api-comment.md — produce it here so "Post or update PR comment"
+            # does not fail (exit 1) on a benign rebase conflict. The merge itself
+            # is unaffected; only the as-rebased API verification is skipped.
+            {
+              echo "<!-- devlens-api-check -->"
+              echo "### ⚠️ API check skipped (rebase conflict)"
+              echo ""
+              echo "Could not rebase this PR onto \`${{ github.event.pull_request.base.ref }}\` cleanly, so the public-API surface was not verified. Rebase the branch onto \`${{ github.event.pull_request.base.ref }}\` to restore the API check. The merge itself is unaffected."
+            } > /tmp/api-comment.md
           fi
 
       - name: Detect API changes

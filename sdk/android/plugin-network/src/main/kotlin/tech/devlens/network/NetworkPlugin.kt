@@ -3,6 +3,7 @@ package tech.devlens.network
 import tech.devlens.Platform
 import tech.devlens.ProbeHost
 import tech.devlens.ProbePlugin
+import tech.devlens.QueryRequest
 import okhttp3.Interceptor
 import java.util.ArrayDeque
 
@@ -62,6 +63,12 @@ class NetworkPlugin @JvmOverloads constructor(
 
     override fun onDetach() {
         host = null
+    }
+
+    // Push-only plugin. Declared (not inherited) so the BCV public-API signature
+    // is deterministic — see tech.devlens.ProbePlugin.onQuery.
+    override fun onQuery(request: QueryRequest) {
+        // Network is push-only; inbound queries are intentionally ignored.
     }
 
     /** Returns an OkHttp [Interceptor] that captures requests through this plugin. */

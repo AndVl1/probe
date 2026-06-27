@@ -2,7 +2,9 @@ package tech.devlens.sample
 
 import android.app.Application
 import tech.devlens.Probe
+import tech.devlens.db.DatabasePlugin
 import tech.devlens.network.NetworkPlugin
+import tech.devlens.sample.data.SampleDatabase
 
 class SampleApplication : Application() {
 
@@ -14,6 +16,10 @@ class SampleApplication : Application() {
         super.onCreate()
 
         if (BuildConfig.DEBUG) {
+            // Touch the sample database so its file exists for the DatabasePlugin
+            // to inspect on a fresh install (SQLiteOpenHelper creates it on first open).
+            SampleDatabase(this).readableDatabase.use { /* force create + seed */ }
+
             // Probe server URL:
             //   - Emulator: ws://10.0.2.2:8484  (host machine from emulator)
             //   - Physical device (USB): ws://localhost:8484 + run: adb reverse tcp:8484 tcp:8484
@@ -23,6 +29,7 @@ class SampleApplication : Application() {
                 Probe.Builder(this)
                     .serverUrl(serverUrl)
                     .plugin(networkPlugin)
+                    .plugin(DatabasePlugin(this))
                     .build()
             )
         }

@@ -14,6 +14,7 @@ use devlens::{
     buffer::EventBuffer,
     display::Displayer,
     filter::Filter,
+    query::ClientRegistry,
     server::handle_connection,
 };
 
@@ -68,16 +69,19 @@ async fn start_test_server_full(
     let port = listener.local_addr().unwrap().port();
     let buffer = Arc::new(EventBuffer::new(1000));
     let buffer_outer = Arc::clone(&buffer);
+    let registry = Arc::new(ClientRegistry::new());
+    let registry_outer = Arc::clone(&registry);
 
     tokio::spawn(async move {
         while let Ok((stream, _)) = listener.accept().await {
             let buf = Arc::clone(&buffer_outer);
+            let reg = Arc::clone(&registry_outer);
             let disp = displayer.clone();
             let filt = Arc::clone(&filter);
             let save = save_file.clone();
             let args = make_args();
             tokio::spawn(async move {
-                let _ = handle_connection(stream, args, disp, filt, buf, save).await;
+                let _ = handle_connection(stream, args, disp, filt, buf, save, reg).await;
             });
         }
     });
@@ -166,9 +170,12 @@ async fn test_malformed_json_no_crash() {
     );
 }
 
-/// Events for unknown plugins must NOT end up in the buffer (only lifecycle).
+/// Non-network (e.g. `database`) plugin events ARE buffered now that
+/// buffering is generalized (DoD8: server.rs buffers ALL plugin events, not
+/// only `network`). The event payload rides `devlens dump` verbatim; typed
+/// extraction + filter + display remain network-only.
 #[tokio::test]
-async fn test_unknown_plugin_event_not_buffered() {
+async fn test_non_network_plugin_event_is_buffered() {
     let (port, buffer) = start_test_server().await;
     let mut ws = ws_connect(port).await;
 
@@ -177,14 +184,26 @@ async fn test_unknown_plugin_event_not_buffered() {
 
     let dump = buffer.dump_since(0);
     let has_db = dump.entries.iter().any(|v| v["plugin"] == "database");
-    assert!(!has_db, "database plugin events must not be buffered");
-    // Only lifecycle envelopes remain: connect + hello + disconnect = 3.
-    let lifecycle: Vec<&str> = dump
+    assert!(has_db, "database plugin events must be buffered (generalized)");
+    // connect + hello + event + disconnect = 4 lifecycle+event envelopes.
+    let types: Vec<&str> = dump
         .entries
         .iter()
         .map(|v| v["type"].as_str().unwrap_or(""))
         .collect();
-    assert_eq!(lifecycle, vec!["connect", "hello", "disconnect"]);
+    assert_eq!(
+        types,
+        vec!["connect", "hello", "event", "disconnect"],
+        "db event interleaved with lifecycle in chronological order"
+    );
+
+    // The db event payload is preserved verbatim.
+    let db_event = dump
+        .entries
+        .iter()
+        .find(|v| v["plugin"] == "database")
+        .expect("database event buffered");
+    assert_eq!(db_event["payload"]["query"], "SELECT * FROM users");
 }
 
 /// Two clients connect at the same time; each sends one event.

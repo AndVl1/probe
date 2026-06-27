@@ -45,10 +45,64 @@ public abstract interface class tech/devlens/ProbePlugin {
 	public fun getSupportedPlatforms ()Ljava/util/Set;
 	public abstract fun onAttach (Ltech/devlens/ProbeHost;)V
 	public abstract fun onDetach ()V
+	public abstract fun onQuery (Ltech/devlens/QueryRequest;)V
 }
 
 public final class tech/devlens/ProbePlugin$DefaultImpls {
 	public static fun getSupportedPlatforms (Ltech/devlens/ProbePlugin;)Ljava/util/Set;
+}
+
+public final class tech/devlens/QueryRequest {
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;)V
+	public synthetic fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()Ljava/lang/String;
+	public final fun component3 ()Ljava/lang/String;
+	public final fun component4 ()Ljava/util/Map;
+	public final fun copy (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;)Ltech/devlens/QueryRequest;
+	public static synthetic fun copy$default (Ltech/devlens/QueryRequest;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;ILjava/lang/Object;)Ltech/devlens/QueryRequest;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getMethod ()Ljava/lang/String;
+	public final fun getParams ()Ljava/util/Map;
+	public final fun getPlugin ()Ljava/lang/String;
+	public final fun getRequestId ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public abstract class tech/devlens/QueryResult {
+}
+
+public final class tech/devlens/QueryResult$Error : tech/devlens/QueryResult {
+	public fun <init> (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()Ljava/lang/String;
+	public final fun component3 ()Ljava/lang/String;
+	public final fun copy (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ltech/devlens/QueryResult$Error;
+	public static synthetic fun copy$default (Ltech/devlens/QueryResult$Error;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ILjava/lang/Object;)Ltech/devlens/QueryResult$Error;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getCode ()Ljava/lang/String;
+	public final fun getMessage ()Ljava/lang/String;
+	public final fun getRequestId ()Ljava/lang/String;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class tech/devlens/QueryResult$Success : tech/devlens/QueryResult {
+	public fun <init> (Ljava/lang/String;Ljava/util/Map;)V
+	public final fun component1 ()Ljava/lang/String;
+	public final fun component2 ()Ljava/util/Map;
+	public final fun copy (Ljava/lang/String;Ljava/util/Map;)Ltech/devlens/QueryResult$Success;
+	public static synthetic fun copy$default (Ltech/devlens/QueryResult$Success;Ljava/lang/String;Ljava/util/Map;ILjava/lang/Object;)Ltech/devlens/QueryResult$Success;
+	public fun equals (Ljava/lang/Object;)Z
+	public final fun getRequestId ()Ljava/lang/String;
+	public final fun getResult ()Ljava/util/Map;
+	public fun hashCode ()I
+	public fun toString ()Ljava/lang/String;
+}
+
+public final class tech/devlens/QueryResultKt {
+	public static final fun toPayload (Ltech/devlens/QueryResult;)Ljava/util/Map;
 }
 
 public final class tech/devlens/R {
@@ -59,6 +113,11 @@ public abstract interface class tech/devlens/transport/ProbeTransport {
 	public abstract fun disconnect ()V
 	public abstract fun isConnected ()Z
 	public abstract fun send (Ljava/lang/String;Ljava/util/Map;)V
+	public fun setInboundQueryHandler (Lkotlin/jvm/functions/Function1;)V
+}
+
+public final class tech/devlens/transport/ProbeTransport$DefaultImpls {
+	public static fun setInboundQueryHandler (Ltech/devlens/transport/ProbeTransport;Lkotlin/jvm/functions/Function1;)V
 }
 
 public final class tech/devlens/transport/WebSocketTransport : tech/devlens/transport/ProbeTransport {
@@ -69,6 +128,7 @@ public final class tech/devlens/transport/WebSocketTransport : tech/devlens/tran
 	public fun disconnect ()V
 	public fun isConnected ()Z
 	public fun send (Ljava/lang/String;Ljava/util/Map;)V
+	public fun setInboundQueryHandler (Lkotlin/jvm/functions/Function1;)V
 }
 
 public final class tech/devlens/transport/WebSocketTransport$Companion {

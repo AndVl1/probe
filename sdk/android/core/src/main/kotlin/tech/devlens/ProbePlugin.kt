@@ -42,6 +42,22 @@ interface ProbePlugin {
 
     /** Called when the transport disconnects from the CLI. */
     fun onDetach()
+
+    /**
+     * Called when the CLI sends a query targeted at this plugin.
+     *
+     * **CALLED ON THE TRANSPORT THREAD — DO NOT BLOCK.** Implementations must
+     * dispatch any long-running work (disk, network) to a background thread and
+     * respond asynchronously via [ProbeHost.send] using [QueryResult.toPayload].
+     * The transport never awaits a return value here.
+     *
+     * Default implementation is a no-op: plugins that do not support queries
+     * (e.g. [tech.devlens.Platform.ANDROID]'s push-only plugins) recompile
+     * unchanged and simply ignore inbound queries.
+     *
+     * @param request the inbound query; see [QueryRequest].
+     */
+    fun onQuery(request: QueryRequest) {}
 }
 
 /** Platforms Probe supports. */

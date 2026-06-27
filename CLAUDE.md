@@ -27,6 +27,13 @@ Each NDJSON line is a full event envelope plus CLI-synthesized lifecycle envelop
 
 **Invariants:** default-mode stdout is NDJSON-only — never log to stdout on the daemon path (use `tracing`/`eprintln!`). The WS protocol and plugin IDs are unchanged; non-interactive is purely CLI-side rendering.
 
+## Branch Model
+
+- **`develop` is the main development branch.** All `feat/…`, `fix/…`, `refactor/…` PRs target `develop`.
+- **`main` is release-only** — it advances via `develop → main` PRs and release cuts, never by direct feature work.
+- Enforced by the `Develop Sync Check` CI guard (`.github/workflows/develop-sync-check.yml`): any PR to `main` fails (red) unless every line it introduces is already present in `develop`. Need something on `main`? Land it in `develop` first.
+- **Open PRs against `develop`, not `main`.**
+
 ## Build Commands
 
 ### Rust CLI

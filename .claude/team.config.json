@@ -1,0 +1,37 @@
+{
+  "_comment": "DevLens team config. Routes the Rust CLI -> rust-agents (project mandate), Android SDK -> developer-mobile. Generated for the prefs-plugin + CLI version-guard task; keep for future /team runs.",
+
+  "roles": {
+    "analyst": "fullstack-team:analyst",
+    "tech-researcher": "fullstack-team:tech-researcher",
+    "architect": "fullstack-team:architect",
+    "mobile": "fullstack-team:developer-mobile",
+    "rust": "rust-agents:rust-developer",
+    "qa": "fullstack-team:qa",
+    "code-reviewer": "fullstack-team:code-reviewer"
+  },
+
+  "roster_overrides": {
+    "review": { "add": ["rust-agents:rust-code-reviewer"] },
+    "architecture": { "add": ["rust-agents:rust-architect"] }
+  },
+
+  "models": {
+    "architect": "opus",
+    "code-reviewer": "opus",
+    "tech-researcher": "haiku",
+    "*": "sonnet"
+  },
+
+  "scope_map": [
+    { "glob": ["cli/**/*.rs", "**/*.rs", "**/Cargo.toml", "**/Cargo.lock"], "scope": "rust", "dev_agent": "rust-agents:rust-developer" },
+    { "glob": ["sdk/android/**", "**/*.kt", "**/*.kts", "**/*.gradle", "**/build.gradle.kts", "**/settings.gradle.kps"], "scope": "mobile", "dev_agent": "fullstack-team:developer-mobile" }
+  ],
+
+  "flags": {
+    "has_security": ["**/auth/**", "**/security/**", "**/*crypto*", "**/*Secret*", "**/*Token*"],
+    "has_infra": ["**/Dockerfile", "**/.github/workflows/**"]
+  },
+
+  "design_system": null
+}

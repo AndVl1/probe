@@ -15,7 +15,7 @@ val moduleDescriptions: Map<String, String> = mapOf(
     "core" to "DevLens Android SDK — base module with ProbePlugin, ProbeHost, and WebSocketTransport",
     "plugin-network" to "DevLens Android SDK — network traffic debugging plugin",
     "plugin-db" to "DevLens Android SDK — database debugging plugin (stub)",
-    "plugin-prefs" to "DevLens Android SDK — SharedPreferences debugging plugin (stub)",
+    "plugin-prefs" to "DevLens Android SDK — SharedPreferences debugging plugin",
     "plugin-layout" to "DevLens Android SDK — layout debugging plugin (stub)",
     "devlens-bom" to "DevLens Android SDK — Bill of Materials",
 )

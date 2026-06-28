@@ -115,10 +115,39 @@ if [[ -z "$REPO" ]]; then
 fi
 cd "$REPO"
 
-MODULES=(core plugin-network plugin-db plugin-prefs plugin-layout)
-PLUGINS=(plugin-network plugin-db plugin-prefs plugin-layout)
+MODULES=()
+PLUGINS=()
 VERSIONS_TOML="versions.toml"
 CARGO_TOML="cli/Cargo.toml"
+
+# Derive MODULES from versions.toml [modules] keys — no hardcoded list. Adding
+# a module to [modules] (and applying the devlens-library convention plugin to
+# its build.gradle.kts) makes it a release-plan-tracked module automatically.
+# bash 3.2-safe word splitting (module names are simple identifiers: [A-Za-z0-9-]).
+read_modules_section() {
+  awk '
+    $0=="[modules]" { in_sect=1; next }
+    /^\[/           { in_sect=0 }
+    in_sect {
+      eq=index($0,"=")
+      if (eq>0) {
+        k=substr($0,1,eq-1); sub(/^[ \t]+/,"",k); sub(/[ \t]+$/,"",k)
+        if (k != "") print k
+      }
+    }
+  ' "$1"
+}
+while IFS= read -r __m; do
+  [[ -n "$__m" ]] && MODULES+=("$__m")
+done < <(read_modules_section "$VERSIONS_TOML")
+
+# PLUGINS = MODULES minus "core". "core" is the non-plugin SDK base (the cascade
+# source — when core bumps, every plugin gets a min patch bump). Match by exact
+# name to avoid false positives on substrings.
+for __m in "${MODULES[@]}"; do
+  [[ "$__m" != "core" ]] && PLUGINS+=("$__m")
+done
+unset __m
 
 # ───────────────── small helpers ─────────────────
 die() { echo "::error::release-plan: $*" >&2; exit "${2:-1}"; }

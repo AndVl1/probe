@@ -74,6 +74,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # H3: --verify (drift gate) and the release-plan comment below diff
+          # against per-module <module>-v* and v* tags. The default shallow +
+          # tagless checkout makes both gates silently inert. Full history and
+          # tags are required.
+          fetch-depth: 0
+          fetch-tags: true
 
       - uses: actions/setup-java@v4
         with:
@@ -81,6 +88,10 @@ jobs:
           java-version: 17
 
       - uses: gradle/actions/setup-gradle@v4
+
+      - name: Verify version-state consistency (versions.toml ↔ tags ↔ cli/Cargo.toml)
+        run: |
+          ./scripts/release-plan --verify
 
       - name: Build
         working-directory: sdk/android
@@ -110,62 +121,30 @@ jobs:
             } > /tmp/api-comment.md
           fi
 
-      - name: Detect API changes
-        id: api_check
+      - name: Compute release plan (replaces inline api-change block)
+        id: plan
         if: steps.rebase.outputs.conflict != 'true'
-        working-directory: sdk/android
         continue-on-error: true
         run: |
-          MARKER="<!-- devlens-api-check -->"
-          if ! ./gradlew apiCheck 2>/dev/null; then
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
-            ./gradlew apiDump 2>/dev/null || true
-            DIFF=$(git diff --no-color -- '*/api/*.api')
-
-            # Determine version bump from the diff
-            REMOVED=$(echo "$DIFF" | grep '^-[^-]' | grep -v '^\-\-\-' || true)
-            if [ -n "$REMOVED" ]; then
-              CURRENT_MAJOR=$(cut -d. -f1 < ../../VERSION 2>/dev/null || echo "0")
-              if [ "$CURRENT_MAJOR" -eq 0 ] 2>/dev/null; then
-                BUMP="⚠️ **minor** (breaking change, pre-1.0)"
-              else
-                BUMP="🚨 **major** (breaking change)"
-              fi
-            else
-              BUMP="📦 **minor** (new public API)"
-            fi
-
-            {
-              echo "$MARKER"
-              echo "### ⚠️ API Changes Detected"
-              echo ""
-              echo "**Version bump:** $BUMP"
-              echo ""
-              echo "This PR modifies the public API surface. After merge, \`.api\` files will be regenerated automatically."
-              echo ""
-              echo '```diff'
-              echo "$DIFF"
-              echo '```'
-            } > /tmp/api-comment.md
-            git checkout -- . 2>/dev/null || true
-          else
-            echo "has_changes=false" >> "$GITHUB_OUTPUT"
-            {
-              echo "$MARKER"
-              echo "### ✅ No public API changes"
-              echo ""
-              echo "**Version bump:** 📦 **patch** (no API changes)"
-            } > /tmp/api-comment.md
-          fi
+          # Same algorithm as release-prepare: per-module bump matrix from BCV
+          # .api diffs since the last per-module tag. Posted as the PR comment so
+          # reviewers see exactly what a release after this PR would publish.
+          MARKER="<!-- devlens-release-plan -->"
+          {
+            echo "$MARKER"
+            echo "### 📦 Release plan (if this PR merges)"
+            echo ""
+            ./scripts/release-plan --plan --format=markdown
+          } > /tmp/release-plan-comment.md
 
       - name: Post or update PR comment
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && steps.rebase.outputs.conflict != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          MARKER="<!-- devlens-api-check -->"
-          BODY=$(cat /tmp/api-comment.md)
+          MARKER="<!-- devlens-release-plan -->"
+          BODY=$(cat /tmp/release-plan-comment.md)
 
           # Find existing comment by marker
           COMMENT_ID=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \

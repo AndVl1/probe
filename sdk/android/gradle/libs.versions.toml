@@ -2,6 +2,7 @@
 bcv = "0.18.1"
 agp = "9.2.0"
 kotlin = "2.4.0"
+mavenPublish = "0.32.0"
 coroutines = "1.11.0"
 okhttp = "5.4.0"
 retrofit = "3.0.0"
@@ -45,4 +46,4 @@ android-library = { id = "com.android.library", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 bcv = { id = "org.jetbrains.kotlinx.binary-compatibility-validator", version.ref = "bcv" }
-maven-publish = { id = "com.vanniktech.maven.publish.base", version = "0.32.0" }
+maven-publish = { id = "com.vanniktech.maven.publish.base", version.ref = "mavenPublish" }

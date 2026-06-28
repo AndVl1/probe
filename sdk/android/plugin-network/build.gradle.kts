@@ -1,18 +1,9 @@
 plugins {
-    alias(libs.plugins.android.library)
+    id("devlens-library")
 }
 
 android {
     namespace = "tech.devlens.network"
-    compileSdk = 36
-    defaultConfig {
-        minSdk = 24
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-    }
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
-    }
 }
 
 dependencies {

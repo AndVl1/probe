@@ -1,5 +1,13 @@
 name: Publish Release
 
+# Thin caller of scripts/release-plan. The script emits a publish-list
+# (publish.json) describing what to build/publish/tag and whether each artifact
+# is already done (per-module/bom/release tag existence). This workflow:
+#   - publishes only PENDING modules + BOM (idempotent: skips done by tag),
+#   - runs apiCheck per pending module only (no auto-dump on the release path),
+#   - builds CLI binaries + homebrew only if the CLI changed,
+#   - creates <module>-v*, bom-v*, and the overall v* tags on success.
+
 on:
   push:
     branches: [main]
@@ -8,67 +16,50 @@ on:
 permissions:
   contents: write
 
+# H2: serialize publish runs. cancel-in-progress MUST be false — cancelling
+# mid-publish leaves a release suspended on Maven Central (staging repository
+# open but not closed) and makes idempotent resume harder, not easier.
+concurrency:
+  group: release-publish
+  cancel-in-progress: false
+
 jobs:
   prepare:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.version.outputs.value }}
-      should_publish: ${{ steps.tag_check.outputs.should_publish }}
-      cli_changed: ${{ steps.changes.outputs.cli }}
-      sdk_changed: ${{ steps.changes.outputs.sdk }}
+      should_publish: ${{ steps.list.outputs.should_publish }}
+      has_maven: ${{ steps.list.outputs.has_maven }}
+      has_cli: ${{ steps.list.outputs.has_cli }}
+      bom_version: ${{ steps.list.outputs.bom_version }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Read version
-        id: version
+      - name: Build publish list
+        id: list
         run: |
-          VERSION=$(cat VERSION)
-          echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Publishing candidate: v${VERSION}"
+          ./scripts/release-plan --publish-list --format=json > publish.json
+          echo "--- publish.json ---"
+          cat publish.json
 
-      - name: Check if tag already exists
-        id: tag_check
-        env:
-          VERSION: ${{ steps.version.outputs.value }}
-        run: |
-          if git tag --list "v${VERSION}" | grep -q "v${VERSION}"; then
-            echo "should_publish=false" >> "$GITHUB_OUTPUT"
-            echo "Tag v${VERSION} already exists — skipping."
-          else
-            echo "should_publish=true" >> "$GITHUB_OUTPUT"
-          fi
+          BOM_VER=$(jq -r '.bom_version' publish.json)
+          MAVEN_PENDING=$(jq -r '([.modules[] | select(.status=="pending")] | length > 0) or (.bom.status=="pending")' publish.json)
+          HAS_CLI=$(jq -r '.cli.publish_binary' publish.json)
 
-      - name: Detect what changed since last tag
-        id: changes
-        run: |
-          LAST_TAG=$(git tag --sort=-version:refname -l 'v*' | head -n1)
-          if [ -z "$LAST_TAG" ]; then
-            # No previous tag — everything is new
-            echo "cli=true" >> "$GITHUB_OUTPUT"
-            echo "sdk=true" >> "$GITHUB_OUTPUT"
-            echo "First release — publishing everything."
-          else
-            CLI_DIFF=$(git diff --name-only "$LAST_TAG"..HEAD -- cli/ Cargo.toml Cargo.lock | head -1)
-            SDK_DIFF=$(git diff --name-only "$LAST_TAG"..HEAD -- sdk/android/ | head -1)
+          # should_publish: there is at least one pending artifact (module/bom/release tag).
+          ANY_PENDING=$(jq -r '([.modules[] | select(.status=="pending")] | length > 0) or (.bom.status=="pending") or (.release_status=="pending")' publish.json)
 
-            if [ -n "$CLI_DIFF" ]; then
-              echo "cli=true" >> "$GITHUB_OUTPUT"
-              echo "CLI changed since $LAST_TAG"
-            else
-              echo "cli=false" >> "$GITHUB_OUTPUT"
-              echo "CLI unchanged since $LAST_TAG — skipping binary build"
-            fi
+          {
+            echo "should_publish=$ANY_PENDING"
+            echo "has_maven=$MAVEN_PENDING"
+            echo "has_cli=$HAS_CLI"
+            echo "bom_version=$BOM_VER"
+          } >> "$GITHUB_OUTPUT"
 
-            if [ -n "$SDK_DIFF" ]; then
-              echo "sdk=true" >> "$GITHUB_OUTPUT"
-              echo "SDK changed since $LAST_TAG"
-            else
-              echo "sdk=false" >> "$GITHUB_OUTPUT"
-              echo "SDK unchanged since $LAST_TAG — skipping Maven publish"
-            fi
-          fi
+          # Persist for downstream jobs via artifact (checkout is fresh per job).
+          # Note: the publish list is recomputed in each job from tags, so this
+          # artifact is informational; each job re-derives pending set itself.
 
   test:
     needs: prepare
@@ -76,6 +67,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -89,18 +82,20 @@ jobs:
           distribution: temurin
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
-      - name: Android build + test + apiCheck
+      - name: Android build + test
         working-directory: sdk/android
-        run: ./gradlew build test apiCheck
+        run: ./gradlew assembleRelease test
 
   publish-maven:
     needs: [prepare, test]
     if: >-
       needs.prepare.outputs.should_publish == 'true' &&
-      needs.prepare.outputs.sdk_changed == 'true'
+      needs.prepare.outputs.has_maven == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-java@v4
         with:
@@ -108,20 +103,90 @@ jobs:
           java-version: 17
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Publish to Maven Central
-        working-directory: sdk/android
+      - name: Publish pending modules + BOM (idempotent per tag + Central HEAD check)
         env:
           ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.OSSRH_USERNAME }}
           ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.OSSRH_PASSWORD }}
           ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_PRIVATE_KEY }}
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.GPG_PASSPHRASE }}
-        run: ./gradlew publishAllPublicationsToMavenCentral -Prelease=true
+        run: |
+          set -euo pipefail
+          ./scripts/release-plan --publish-list --format=json > publish.json
+
+          # ensure_tag <tag>: create (if missing) and push with retry. The tag
+          # MUST land for idempotent resume — without it a re-run tries to
+          # redeploy an artifact Central has already accepted → hard reject.
+          # H5(c).
+          ensure_tag() {
+            local tag="$1" attempts=0
+            if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+              : # already local
+            else
+              git tag "$tag"
+            fi
+            while ! git push origin "$tag"; do
+              attempts=$((attempts+1))
+              if [[ $attempts -ge 3 ]]; then
+                echo "::error::failed to push tag $tag after 3 attempts" >&2
+                exit 1
+              fi
+              echo "tag push retry $attempts for $tag (pulling remote tags)…"
+              git fetch --tags origin >/dev/null 2>&1 || true
+              # if a parallel push landed it, we are done.
+              if git ls-remote --tags origin "refs/tags/${tag}" | grep -q .; then
+                break
+              fi
+              sleep 5
+            done
+          }
+
+          # on_central <group_or_module> <name> <version> → 0 if the .pom is
+          # already published to Maven Central, 1 otherwise. H5(a): partial-
+          # failure resume — if Central already has the artifact, skip the
+          # deploy and just ensure the tag.
+          on_central() {
+            local name="$1" ver="$2"
+            local url="https://repo1.maven.org/maven2/tech/devlens/${name}/${ver}/${name}-${ver}.pom"
+            curl -fsI "$url" >/dev/null 2>&1
+          }
+
+          # Per-module: apiCheck (hard gate, BEFORE publish — never publish a
+          # module whose committed .api is stale) → publish → tag. No auto-dump
+          # on the release path. A single-module apiCheck/publish failure exits
+          # the loop (set -e); re-running is idempotent.
+          for m in $(jq -r '.modules[] | select(.status=="pending") | .name' publish.json); do
+            VER=$(jq -r --arg m "$m" '.modules[] | select(.name==$m) | .version' publish.json)
+            echo "::group::Release :$m @ $VER"
+            if on_central "$m" "$VER"; then
+              echo "::notice::$m $VER already on Maven Central — skipping deploy, ensuring tag."
+              ensure_tag "${m}-v${VER}"
+              echo "::endgroup::"
+              continue
+            fi
+            ( cd sdk/android && ./gradlew ":$m:apiCheck" )
+            ( cd sdk/android && ./gradlew ":$m:publishAllPublicationsToMavenCentral" -Prelease=true )
+            ensure_tag "${m}-v${VER}"
+            echo "::endgroup::"
+          done
+
+          # BOM
+          BOM_VER=$(jq -r '.bom_version' publish.json)
+          if [[ "$(jq -r '.bom.status' publish.json)" == "pending" ]]; then
+            echo "::group::Publish :bom @ $BOM_VER"
+            if on_central "devlens-bom" "$BOM_VER"; then
+              echo "::notice::devlens-bom $BOM_VER already on Maven Central — skipping deploy, ensuring tag."
+            else
+              ( cd sdk/android && ./gradlew ":bom:publishAllPublicationsToMavenCentral" -Prelease=true )
+            fi
+            ensure_tag "bom-v${BOM_VER}"
+            echo "::endgroup::"
+          fi
 
   build-binaries:
     needs: [prepare, test]
     if: >-
       needs.prepare.outputs.should_publish == 'true' &&
-      needs.prepare.outputs.cli_changed == 'true'
+      needs.prepare.outputs.has_cli == 'true'
     strategy:
       matrix:
         include:
@@ -164,10 +229,9 @@ jobs:
       (needs.build-binaries.result == 'success' || needs.build-binaries.result == 'skipped')
     runs-on: ubuntu-latest
     env:
-      VERSION: ${{ needs.prepare.outputs.version }}
+      VERSION: ${{ needs.prepare.outputs.bom_version }}
       GH_TOKEN: ${{ github.token }}
-      CLI_CHANGED: ${{ needs.prepare.outputs.cli_changed }}
-      SDK_CHANGED: ${{ needs.prepare.outputs.sdk_changed }}
+      HAS_CLI: ${{ needs.prepare.outputs.has_cli }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -178,13 +242,17 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Create and push tag
+      - name: Create overall release tag v${VERSION}
         run: |
-          git tag "v${VERSION}"
-          git push origin "v${VERSION}"
+          if git tag -l "v${VERSION}" | grep -q .; then
+            echo "Tag v${VERSION} already exists — skipping (idempotent)."
+          else
+            git tag "v${VERSION}"
+            git push origin "v${VERSION}"
+          fi
 
       - name: Download binaries
-        if: env.CLI_CHANGED == 'true'
+        if: env.HAS_CLI == 'true'
         uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -192,42 +260,42 @@ jobs:
       - name: Build release notes
         id: notes
         run: |
+          ./scripts/release-plan --publish-list --format=json > publish.json
           BODY="## What's published\n"
-          if [ "$SDK_CHANGED" = "true" ]; then
-            BODY="${BODY}- **Android SDK** → Maven Central \`tech.devlens:*:${VERSION}\`\n"
-          fi
-          if [ "$CLI_CHANGED" = "true" ]; then
+          BODY="${BODY}- **Android SDK**: "
+          BODY="${BODY}$(jq -r '[.modules[] | select(.status=="done") | \"\\(.name):\\(.version)\"] | join(", ")' publish.json)\n"
+          BODY="${BODY}- **BOM**: tech.devlens:devlens-bom:${VERSION}\n"
+          if [ "$HAS_CLI" = "true" ]; then
             BODY="${BODY}- **CLI binary** → GitHub Release assets + Homebrew\n"
           fi
-          echo "$BODY" > /tmp/release-notes.md
+          printf '%b\n' "$BODY" > /tmp/release-notes.md
 
       - name: Create GitHub Release (with binaries)
-        if: env.CLI_CHANGED == 'true'
+        if: env.HAS_CLI == 'true'
         run: |
           gh release create "v${VERSION}" \
             --title "v${VERSION}" \
             --notes-file /tmp/release-notes.md \
-            --generate-notes \
             artifacts/devlens-linux-x86_64/devlens-linux-x86_64 \
             artifacts/devlens-macos-aarch64/devlens-macos-aarch64
 
-      - name: Create GitHub Release (SDK only, no binaries)
-        if: env.CLI_CHANGED != 'true'
+      - name: Create GitHub Release (no binaries)
+        if: env.HAS_CLI != 'true'
         run: |
           gh release create "v${VERSION}" \
             --title "v${VERSION}" \
-            --notes-file /tmp/release-notes.md \
-            --generate-notes
+            --notes-file /tmp/release-notes.md
 
   update-homebrew:
     needs: [prepare, release, build-binaries]
     if: >-
       needs.prepare.outputs.should_publish == 'true' &&
-      needs.prepare.outputs.cli_changed == 'true' &&
+      needs.prepare.outputs.has_cli == 'true' &&
+      needs.release.result == 'success' &&
       needs.build-binaries.result == 'success'
     runs-on: ubuntu-latest
     env:
-      VERSION: ${{ needs.prepare.outputs.version }}
+      VERSION: ${{ needs.prepare.outputs.bom_version }}
       GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
     steps:
       - name: Download binaries for SHA256
@@ -284,6 +352,12 @@ jobs:
             end
           end
           FORMULA
+
+      - name: Validate formula syntax (ruby -c)
+        # C1: catch a malformed formula BEFORE pushing to the tap. A syntax
+        # error here breaks `brew install`/`brew upgrade` for every user.
+        run: |
+          ruby -c homebrew-tap/Formula/devlens.rb
 
       - name: Push formula update
         working-directory: homebrew-tap

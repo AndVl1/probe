@@ -21,5 +21,6 @@ include(
     ":plugin-db",
     ":plugin-prefs",
     ":plugin-layout",
+    ":bom",
     ":sample",
 )

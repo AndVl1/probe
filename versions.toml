@@ -1,0 +1,28 @@
+# DevLens artifact versions. Mutated ONLY by scripts/release-plan --apply.
+# Verified by scripts/release-plan --verify in CI.
+#
+# Schema:
+#   [bom] version        — BOM + CLI version. CLI tracks the BOM (cli/Cargo.toml
+#                          version is stamped from this value at release time).
+#   [modules] <name>     — per-module version. Modules version INDEPENDENTLY and
+#                          may diverge. publishable: core + plugin-*.
+#
+# Baseline 0.3.0 reflects the last legacy release already on Maven Central
+# (confirmed via maven-metadata.xml: all of core + plugin-* have latest=0.3.0;
+# git tag v0.3.0 exists. 0.2.0 is also published but 0.3.0 is the newest).
+# NOTE: there is no v0.2.0 tag — the legacy flow only tagged v0.1.0 and v0.3.0.
+#
+# Change detection baseline = per-module tags of the form <module>-v<version>.
+# Bootstrap those tags on the migration commit (see migration notes) so the
+# first new-system release detects changes from that point. Until the bootstrap
+# tags exist, scripts/release-plan --plan is a safe no-op for every module.
+
+[bom]
+version = "0.3.0"
+
+[modules]
+core = "0.3.0"
+plugin-network = "0.3.0"
+plugin-db = "0.3.0"
+plugin-prefs = "0.3.0"
+plugin-layout = "0.3.0"

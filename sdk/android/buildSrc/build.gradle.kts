@@ -12,22 +12,20 @@ repositories {
 }
 
 dependencies {
-    // NOTE: versions MIRROR sdk/android/gradle/libs.versions.toml. buildSrc
-    // cannot easily consume the host's version catalog (the type-safe `libs`
-    // accessors are not generated for precompiled script plugins); the four
-    // values below must be kept in sync with libs.versions.toml manually.
+    // Versions come from the HOST version catalog (sdk/android/gradle/
+    // libs.versions.toml), declared for buildSrc via buildSrc/settings.gradle.kts.
+    // No version literals here — single source of truth is libs.versions.toml.
+    // Coordinates are plugin-marker artifacts (pull the implementation JAR
+    // transitively); buildSrc needs the plugin classes on its compile classpath
+    // so the convention plugin can apply them and reference their types.
 
-    // [versions] agp — AGP plugin classes (for LibraryExtension accessors).
-    implementation("com.android.tools.build:gradle:9.2.0")
+    // AGP — LibraryExtension accessors.
+    implementation("com.android.tools.build:gradle:${libs.versions.agp.get()}")
 
-    // [plugins] maven-publish. Plugin marker artifacts pull the implementation
-    // transitively. Both the full plugin ID (`com.vanniktech.maven.publish`) and
-    // the base variant (`.base`) are referenced from buildSrc; both markers
-    // point to the same underlying JAR.
-    implementation("com.vanniktech.maven.publish:com.vanniktech.maven.publish.gradle.plugin:0.32.0")
-    implementation("com.vanniktech.maven.publish.base:com.vanniktech.maven.publish.base.gradle.plugin:0.32.0")
+    // vanniktech maven-publish — full + base plugin markers (same JAR).
+    implementation("com.vanniktech.maven.publish:com.vanniktech.maven.publish.gradle.plugin:${libs.versions.mavenPublish.get()}")
+    implementation("com.vanniktech.maven.publish.base:com.vanniktech.maven.publish.base.gradle.plugin:${libs.versions.mavenPublish.get()}")
 
-    // [plugins] bcv. Plugin marker brings BCV task types (KotlinApiBuildTask,
-    // KotlinApiCompareTask) onto the buildSrc compile classpath.
-    implementation("org.jetbrains.kotlinx.binary-compatibility-validator:org.jetbrains.kotlinx.binary-compatibility-validator.gradle.plugin:0.18.1")
+    // BCV — KotlinApiBuildTask / KotlinApiCompareTask task types.
+    implementation("org.jetbrains.kotlinx.binary-compatibility-validator:org.jetbrains.kotlinx.binary-compatibility-validator.gradle.plugin:${libs.versions.bcv.get()}")
 }

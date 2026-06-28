@@ -7,6 +7,7 @@ pub mod filter;
 pub mod protocol;
 pub mod query;
 pub mod server;
+pub mod version;
 
 use std::path::PathBuf;
 

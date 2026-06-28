@@ -41,6 +41,12 @@ pub struct HelloMessage {
     pub android_version: Option<String>,
     pub os_version: Option<String>,
     pub platform: Option<String>,
+    /// Minimum CLI version the SDK needs to fully support its current event
+    /// payload schemas. Optional / additive: old SDKs omit it → `None` → no
+    /// guard warning. Wire key is `minCliVersion` via the struct's
+    /// `rename_all = "camelCase"`.
+    #[serde(default)]
+    pub min_cli_version: Option<String>,
 }
 
 /// Envelope sent by the current Android SDK for all plugin events.
@@ -166,6 +172,47 @@ mod tests {
                 assert_eq!(h.device_model, "Pixel 6");
                 assert_eq!(h.android_version, Some("13".to_string()));
                 assert_eq!(h.platform, Some("android".to_string()));
+            }
+            other => panic!("expected Hello, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn deserialize_hello_without_min_cli_version_defaults_to_none() {
+        // Additive: an old SDK that omits `minCliVersion` must still parse, and
+        // the new field defaults to None (#[serde(default)] on Option<String>).
+        let json = r#"{
+            "type": "hello",
+            "clientId": "client-002",
+            "appPackage": "com.example.app",
+            "deviceModel": "Pixel 7",
+            "platform": "android"
+        }"#;
+        let msg: Message = serde_json::from_str(json).expect("should deserialize");
+        match msg {
+            Message::Hello(h) => {
+                assert_eq!(h.client_id, "client-002");
+                assert_eq!(h.min_cli_version, None);
+            }
+            other => panic!("expected Hello, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn deserialize_hello_with_min_cli_version_is_some() {
+        let json = r#"{
+            "type": "hello",
+            "clientId": "client-003",
+            "appPackage": "com.example.app",
+            "deviceModel": "Pixel 8",
+            "platform": "android",
+            "minCliVersion": "0.3.0"
+        }"#;
+        let msg: Message = serde_json::from_str(json).expect("should deserialize");
+        match msg {
+            Message::Hello(h) => {
+                assert_eq!(h.client_id, "client-003");
+                assert_eq!(h.min_cli_version, Some("0.3.0".to_string()));
             }
             other => panic!("expected Hello, got {:?}", other),
         }

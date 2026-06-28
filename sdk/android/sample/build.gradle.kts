@@ -50,6 +50,7 @@ android {
 dependencies {
     implementation(project(":plugin-network"))
     implementation(project(":plugin-db"))
+    implementation(project(":plugin-prefs"))
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)

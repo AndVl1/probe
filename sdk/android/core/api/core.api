@@ -15,6 +15,7 @@ public final class tech/devlens/Platform$Companion {
 
 public final class tech/devlens/Probe : tech/devlens/ProbeHost {
 	public static final field Companion Ltech/devlens/Probe$Companion;
+	public static final field MIN_CLI_VERSION Ljava/lang/String;
 	public synthetic fun <init> (Ltech/devlens/transport/ProbeTransport;Ljava/util/List;Lkotlin/jvm/internal/DefaultConstructorMarker;)V
 	public fun isConnected ()Z
 	public fun send (Ljava/lang/String;Ljava/util/Map;)V

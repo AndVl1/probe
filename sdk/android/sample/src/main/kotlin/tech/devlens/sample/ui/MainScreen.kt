@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -86,6 +87,12 @@ fun MainScreen(viewModel: MainViewModel = viewModel()) {
                         Tab.PEOPLE -> PeopleList(uiState.people)
                         Tab.FILMS -> FilmsList(uiState.films)
                         Tab.PLANETS -> PlanetsList(uiState.planets)
+                        Tab.PREFS -> PrefsPanel(
+                            onWritePref = { viewModel.writePref() },
+                            onRemovePref = { viewModel.removePref() },
+                            onClearPrefs = { viewModel.clearPrefs() },
+                            onRegisterLatePrefs = { viewModel.registerLatePrefs() }
+                        )
                     }
                 }
             }
@@ -162,6 +169,41 @@ fun PlanetsList(planets: List<Planet>) {
                 }
             )
             HorizontalDivider()
+        }
+    }
+}
+
+@Composable
+fun PrefsPanel(
+    onWritePref: () -> Unit,
+    onRemovePref: () -> Unit,
+    onClearPrefs: () -> Unit,
+    onRegisterLatePrefs: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text("Preferences", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        Text(
+            "Write / remove / clear values in 'probe_demo', or register a prefs " +
+                "file created at runtime. Each action streams an event to the CLI.",
+            style = MaterialTheme.typography.bodyMedium
+        )
+        Spacer(Modifier.height(8.dp))
+        Button(onClick = onWritePref, modifier = Modifier.fillMaxWidth()) {
+            Text("Write prefs (all 6 types)")
+        }
+        Button(onClick = onRemovePref, modifier = Modifier.fillMaxWidth()) {
+            Text("Remove 'sample_string'")
+        }
+        Button(onClick = onClearPrefs, modifier = Modifier.fillMaxWidth()) {
+            Text("Clear 'probe_demo'")
+        }
+        Button(onClick = onRegisterLatePrefs, modifier = Modifier.fillMaxWidth()) {
+            Text("Register 'late_created_prefs'")
         }
     }
 }

@@ -444,6 +444,18 @@ pub async fn handle_connection(
                 // Clone the writer sender so the dispatcher can push Query
                 // frames through the same serialized writer path.
                 registry.register(conn_id, writer_tx.clone());
+                // Version guard: warn (stderr only) at most once per connection
+                // if the CLI is older than the SDK-advertised minCliVersion.
+                // Policy is WARN & CONTINUE — never break the connection.
+                // `hello.is_none()` ensures one warning per connection even on
+                // a re-hello. Borrow of `h` happens before the move below.
+                if hello.is_none() {
+                    if let crate::version::VersionCheck::Stale { cli, min } =
+                        crate::version::check_running_against(h.min_cli_version.as_deref())
+                    {
+                        eprintln!("{}", crate::version::format_warning(&cli, &min));
+                    }
+                }
                 hello = Some(h);
             }
             Ok(Message::Transaction(tx)) => {

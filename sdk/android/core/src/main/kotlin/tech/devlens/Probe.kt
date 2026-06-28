@@ -124,6 +124,15 @@ class Probe private constructor(
     // ── Companion (global singleton) ─────────────────────────────────────────
 
     companion object {
+        /**
+         * Minimum CLI (Rust server) version this SDK is known to work against.
+         * Sent as a top-level `minCliVersion` field in the `hello` handshake so
+         * the CLI can warn / reject when an older server is paired with a newer
+         * SDK that relies on protocol features it doesn't yet speak. Bump only
+         * on a protocol-breaking SDK release.
+         */
+        const val MIN_CLI_VERSION: String = "0.3.0"
+
         @Volatile
         private var instance: Probe? = null
 

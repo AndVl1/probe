@@ -97,6 +97,16 @@ jobs:
         working-directory: sdk/android
         run: ./gradlew build -x apiCheck
 
+      - name: Verify BCV .api in sync (hard gate — no generation in PRs)
+        # Policy: PRs VERIFY the committed public-API surface (.api must match
+        # the code). Generation (apiDump) happens ONLY on develop/main via
+        # .github/workflows/api-dump.yml (branch-filtered, never runs on a PR
+        # branch). Drift here fails the PR — the author must regenerate locally
+        # (`./gradlew apiDump` in sdk/android) and commit the result. CI must
+        # never regenerate .api on a branch.
+        working-directory: sdk/android
+        run: ./gradlew apiCheck
+
       - name: Rebase onto target branch
         if: github.event_name == 'pull_request'
         id: rebase

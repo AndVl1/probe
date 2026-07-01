@@ -51,14 +51,20 @@ impl Displayer {
         let method_str = format!("{:<6}", tx.method);
         let method_colored = method_str.cyan().to_string();
 
+        // [MOCKED] badge appears only for transactions served by an installed
+        // mock rule (network plugin). Absent/Some(false)/None → no badge, so
+        // old SDKs that don't report the flag render unchanged.
+        let mock_badge = mock_badge(tx.mocked);
+
         if let Some(ref error) = tx.error {
             let bullet = "✗".red().bold().to_string();
             let url_str = tx.url.as_str();
             let error_str = format!("ERROR: {}", error).red().bold().to_string();
             println!(
-                "{} {} {}  {}  {}",
+                "{} {} {}{}  {}  {}",
                 ts_dim(&ts),
                 bullet,
+                mock_badge,
                 method_colored,
                 url_str,
                 error_str
@@ -70,9 +76,10 @@ impl Displayer {
             let duration_str = format_duration(tx.duration_ms).white().to_string();
             let size_str = format_size(tx.response_size_bytes).white().to_string();
             println!(
-                "{} {} {}  {}  {}  {}  {}",
+                "{} {} {}{}  {}  {}  {}  {}",
                 ts_dim(&ts),
                 bullet,
+                mock_badge,
                 method_colored,
                 tx.url,
                 code_str,
@@ -136,6 +143,21 @@ fn current_timestamp() -> String {
     let minutes = (secs % 3600) / 60;
     let seconds = secs % 60;
     format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+}
+
+/// Builds the `[MOCKED]` badge for a transaction served by an installed mock
+/// rule (network plugin).
+///
+/// Returns `"[MOCKED] "` (with a trailing space) when the transaction is
+/// mocked, empty string otherwise. The trailing space is what separates the
+/// badge from the method column in the transaction format string — without it
+/// the line reads `[MOCKED]GET` instead of `[MOCKED] GET`.
+fn mock_badge(mocked: Option<bool>) -> String {
+    if mocked == Some(true) {
+        "[MOCKED] ".yellow().bold().to_string()
+    } else {
+        String::new()
+    }
 }
 
 fn ts_dim(ts: &str) -> String {
@@ -275,6 +297,30 @@ mod tests {
     #[test]
     fn format_size_1mb() {
         assert_eq!(format_size(Some(1_048_576)), "1.0MB");
+    }
+
+    // ── mock_badge ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn mock_badge_when_mocked_ends_with_trailing_space() {
+        // R5: the badge must end with "[MOCKED] " (trailing space) so it does
+        // not run into the method column ([MOCKED] GET, not [MOCKED]GET).
+        no_color();
+        let badge = mock_badge(Some(true));
+        assert!(
+            badge.ends_with("[MOCKED] "),
+            "badge should end with '[MOCKED] ' (trailing space); got {:?}",
+            badge
+        );
+    }
+
+    #[test]
+    fn mock_badge_absent_or_false_is_empty() {
+        // Old SDKs (None) and non-mocked transactions (Some(false)) render
+        // with no badge, so the column layout is unchanged.
+        no_color();
+        assert_eq!(mock_badge(None), "");
+        assert_eq!(mock_badge(Some(false)), "");
     }
 
     // ── format_status_code ──────────────────────────────────────────────────

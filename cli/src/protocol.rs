@@ -41,6 +41,12 @@ pub struct HelloMessage {
     pub android_version: Option<String>,
     pub os_version: Option<String>,
     pub platform: Option<String>,
+    /// Minimum CLI version the SDK needs to fully support its current event
+    /// payload schemas. Optional / additive: old SDKs omit it → `None` → no
+    /// guard warning. Wire key is `minCliVersion` via the struct's
+    /// `rename_all = "camelCase"`.
+    #[serde(default)]
+    pub min_cli_version: Option<String>,
 }
 
 /// Envelope sent by the current Android SDK for all plugin events.
@@ -71,6 +77,11 @@ pub struct HttpTransaction {
     /// Optional: not all SDKs send this field.
     pub app_id: Option<String>,
     pub error: Option<String>,
+    /// Whether this transaction was served by an installed mock rule
+    /// (`network` plugin). Additive + optional: `None` means the SDK is older
+    /// and does not report the flag (treated as "not mocked").
+    #[serde(default)]
+    pub mocked: Option<bool>,
 }
 
 /// CLI-internal lifecycle envelopes.
@@ -166,6 +177,47 @@ mod tests {
                 assert_eq!(h.device_model, "Pixel 6");
                 assert_eq!(h.android_version, Some("13".to_string()));
                 assert_eq!(h.platform, Some("android".to_string()));
+            }
+            other => panic!("expected Hello, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn deserialize_hello_without_min_cli_version_defaults_to_none() {
+        // Additive: an old SDK that omits `minCliVersion` must still parse, and
+        // the new field defaults to None (#[serde(default)] on Option<String>).
+        let json = r#"{
+            "type": "hello",
+            "clientId": "client-002",
+            "appPackage": "com.example.app",
+            "deviceModel": "Pixel 7",
+            "platform": "android"
+        }"#;
+        let msg: Message = serde_json::from_str(json).expect("should deserialize");
+        match msg {
+            Message::Hello(h) => {
+                assert_eq!(h.client_id, "client-002");
+                assert_eq!(h.min_cli_version, None);
+            }
+            other => panic!("expected Hello, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn deserialize_hello_with_min_cli_version_is_some() {
+        let json = r#"{
+            "type": "hello",
+            "clientId": "client-003",
+            "appPackage": "com.example.app",
+            "deviceModel": "Pixel 8",
+            "platform": "android",
+            "minCliVersion": "0.3.0"
+        }"#;
+        let msg: Message = serde_json::from_str(json).expect("should deserialize");
+        match msg {
+            Message::Hello(h) => {
+                assert_eq!(h.client_id, "client-003");
+                assert_eq!(h.min_cli_version, Some("0.3.0".to_string()));
             }
             other => panic!("expected Hello, got {:?}", other),
         }
@@ -370,6 +422,86 @@ mod tests {
         }"#;
         let tx: HttpTransaction = serde_json::from_str(json).expect("should deserialize");
         assert_eq!(tx.app_id, None);
+    }
+
+    // ── HttpTransaction mocked flag (DoD-5 / DoD-17: additive) ────────────────
+    //
+    // The `mocked` field is additive + optional. It must round-trip true, false,
+    // AND absent (back-compat with older SDKs that don't emit it) — mirroring the
+    // existing `app_id` null/absent pattern.
+
+    #[test]
+    fn deserialize_http_transaction_mocked_true() {
+        let json = r#"{
+            "id": "tx-m1",
+            "timestamp": 1700000000,
+            "method": "GET",
+            "url": "https://example.com/people",
+            "requestHeaders": {},
+            "requestSizeBytes": 0,
+            "responseHeaders": {},
+            "mocked": true
+        }"#;
+        let tx: HttpTransaction = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(tx.mocked, Some(true));
+    }
+
+    #[test]
+    fn deserialize_http_transaction_mocked_false() {
+        let json = r#"{
+            "id": "tx-m2",
+            "timestamp": 1700000000,
+            "method": "GET",
+            "url": "https://example.com/people",
+            "requestHeaders": {},
+            "requestSizeBytes": 0,
+            "responseHeaders": {},
+            "mocked": false
+        }"#;
+        let tx: HttpTransaction = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(tx.mocked, Some(false));
+    }
+
+    #[test]
+    fn deserialize_http_transaction_mocked_absent_defaults_none() {
+        // Old SDK without the `mocked` field must still parse → None (back-compat).
+        let json = r#"{
+            "id": "tx-m3",
+            "timestamp": 1700000000,
+            "method": "GET",
+            "url": "https://example.com/people",
+            "requestHeaders": {},
+            "requestSizeBytes": 0,
+            "responseHeaders": {}
+        }"#;
+        let tx: HttpTransaction = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(tx.mocked, None);
+    }
+
+    #[test]
+    fn http_transaction_mocked_roundtrip_preserves_some_true() {
+        // Serialize then deserialize: Some(true) survives a full round-trip.
+        let tx = HttpTransaction {
+            id: "tx-r".into(),
+            timestamp: 1,
+            method: "GET".into(),
+            url: "https://example.com".into(),
+            request_headers: HashMap::new(),
+            request_body: None,
+            request_size_bytes: 0,
+            response_code: Some(200),
+            response_message: None,
+            response_headers: HashMap::new(),
+            response_body: None,
+            response_size_bytes: None,
+            duration_ms: None,
+            app_id: None,
+            error: None,
+            mocked: Some(true),
+        };
+        let s = serde_json::to_string(&tx).expect("serialize");
+        let back: HttpTransaction = serde_json::from_str(&s).expect("deserialize");
+        assert_eq!(back.mocked, Some(true));
     }
 
     // ── EventMessage round-trip ───────────────────────────────────────────────

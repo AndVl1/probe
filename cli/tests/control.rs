@@ -736,3 +736,97 @@ async fn second_serve_on_busy_control_socket_exits_running() {
         stderr,
     );
 }
+
+// ── network mock subcommand: setMock frame dispatched through control plane ───
+//
+// Mirrors query_round_trips_through_control_plane_with_mock_sdk, but exercises
+// the mock path: map_command builds a Request::Query{plugin:"network",
+// method:"setMock"} and the control listener forwards it to the registered SDK
+// client. Asserts the dispatched WS frame shape (DoD-1 at the protocol level).
+
+#[tokio::test]
+async fn mock_add_dispatches_set_mock_frame() {
+    use devlens::mock::{MockAddArgs, MockCommand, map_command};
+    use tokio::sync::mpsc;
+    use tokio_tungstenite::tungstenite::Message as WsMessage;
+
+    let h = harness(100).await;
+
+    // Register a mock SDK client: read the Query frame, assert its wire shape,
+    // then route a setMock-style queryResult back through the same registry.
+    let (tx, mut rx) = mpsc::channel::<WsMessage>(4);
+    h.registry.register(1, tx);
+    let reg = h.registry.clone();
+    let mock = tokio::spawn(async move {
+        let frame = rx.recv().await.expect("query frame received");
+        let text = match frame {
+            WsMessage::Text(t) => t,
+            other => panic!("expected Text, got {:?}", other),
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        // The dispatched frame must target the network plugin's setMock method.
+        assert_eq!(v["type"], "query");
+        assert_eq!(v["plugin"], "network");
+        assert_eq!(v["method"], "setMock");
+        // Params carry the setMock wire shape.
+        assert_eq!(v["params"]["method"], "GET");
+        assert_eq!(v["params"]["url"], "people/");
+        assert_eq!(v["params"]["status"], 200);
+        assert_eq!(v["params"]["body"], "{\"x\":1}");
+        // CLI assigns NO id — the SDK owns that.
+        assert!(
+            v["params"].get("id").is_none(),
+            "CLI must not assign a rule id"
+        );
+
+        let req_id = v["requestId"].as_str().unwrap().to_string();
+        reg.route_response(
+            &req_id,
+            json!({
+                "op": "queryResult",
+                "requestId": req_id,
+                "ok": true,
+                "result": {
+                    "id": "rule-from-sdk",
+                    "action": "set",
+                    "activeCount": 1,
+                },
+            }),
+        );
+    });
+
+    // Build the request via the production map_command path (the same fn
+    // server.rs invokes), then send it over the control plane.
+    let req = map_command(
+        MockCommand::Add(MockAddArgs {
+            method: Some("GET".into()),
+            url: "people/".into(),
+            status: 200,
+            reason: None,
+            body: Some("{\"x\":1}".into()),
+            body_file: None,
+            headers: Vec::new(),
+            error: None,
+        }),
+        10_000,
+    )
+    .expect("map_command ok");
+
+    let (resp, body) = request_with_body(&h.socket, &req).await;
+    match resp {
+        Response::QueryResult { request_id, ok } => {
+            assert!(ok, "successful setMock ack is ok");
+            assert!(
+                request_id.starts_with("q-"),
+                "requestId populated: {}",
+                request_id
+            );
+            let body = body.expect("body line");
+            assert_eq!(body["id"], "rule-from-sdk");
+            assert_eq!(body["action"], "set");
+            assert_eq!(body["activeCount"], 1);
+        }
+        other => panic!("expected QueryResult, got {:?}", other),
+    }
+    mock.await.unwrap();
+}

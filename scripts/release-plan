@@ -1,0 +1,816 @@
+#!/usr/bin/env bash
+# scripts/release-plan — DevLens release orchestrator.
+#
+# Single owner of version / bump / cascade / report logic. GitHub workflows are
+# thin callers of this script. CI adds `--verify` for drift detection.
+#
+# Subcommands:
+#   --plan [--format json|markdown|bare]   compute the bump matrix (read-only)
+#   --apply                                mutate versions.toml + cli/Cargo.toml
+#                                          (+ Cargo.lock if cargo present);
+#                                          emit PR body on stdout; no-op if unchanged
+#   --publish-list [--format json]         read versions.toml + tags → what to
+#                                          build/publish/tag (status pending/done
+#                                          by tag existence)
+#   --verify                               assert versions.toml ↔ tags ↔
+#                                          cli/Cargo.toml consistency; exit 2 on drift;
+#                                          warns if any publishable module has zero
+#                                          <module>-v* tags (bootstrap-inert → H6)
+#   --bom-version                          print current [bom] version (bare)
+#   --bootstrap-tags                       one-shot migration helper (H6): create
+#                                          <module>-v<declared> + bom-v<declared> at
+#                                          HEAD for every publishable module missing a
+#                                          tag. Run on the migration/merge commit so
+#                                          the first new-system release can detect
+#                                          changes. Idempotent (skips existing tags).
+#
+# Flags:
+#   --repo <path>      operate on this repo (default: git toplevel from cwd)
+#   --allow-1.0        permit a major-bump graduation while current major == 0
+#   --bump <type>      force bump type (patch|minor|major) for changed modules
+#                      (default: auto — per-module BCV .api classification)
+#   --format <fmt>     output format for --plan / --publish-list
+#
+# Exit codes:
+#   0  ok / no-op
+#   1  bad input
+#   2  drift (--verify)
+#   3  pre-1.0 major guard hit (needs --allow-1.0)
+#   4  inconsistent partial state
+#
+# No network. Deps: git, awk, sed (+ optionally cargo for --apply Cargo.lock).
+#
+# Bump algorithm (see .work-state/artifacts/architecture.json):
+#   per-module basis  = latest <module>-v* tag, else none (transition no-op)
+#   changed           = git diff --name-only <basis>..HEAD -- sdk/android/<m>/
+#   classify (.api)   = removals → breaking ; additions-only → api-add ; else patch
+#   semver            = breaking & major==0 → minor
+#                       breaking & major>=1 → major
+#                       api-add → minor
+#                       patch  → PATCH+1
+#   cascade           = core→plugins (architect override): when core bumps, each
+#                       plugin gets min patch bump unless it has its own larger bump
+#   bom               = max(module next versions); no-op if no module bumped
+#   cli               = bom version; binary/homebrew gated on cli_changed
+#   guard             = any computed major-bump while current major==0 → exit 3
+#                       unless --allow-1.0 (1.0 graduation is manual)
+#   idempotent        = targets computed from RELEASED (tag) versions, not from
+#                       versions.toml → re-running --apply after a successful
+#                       --apply (and before publish) is a no-op.
+
+set -euo pipefail
+
+# ───────────────── defaults & arg parsing ─────────────────
+REPO=""
+ALLOW_10=false
+FORMAT=""
+CMD=""
+FORCE_BUMP="auto"
+
+usage() {
+  cat >&2 <<'EOF'
+usage: release-plan <subcommand> [flags]
+  --plan [--format json|markdown|bare]
+  --apply
+  --publish-list [--format json]
+  --verify
+  --bom-version
+  --bootstrap-tags
+flags: --repo <path>  --allow-1.0  --bump <patch|minor|major>  --format <fmt>
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --plan|--apply|--publish-list|--verify|--bom-version|--bootstrap-tags) CMD="${1#--}"; shift ;;
+    --repo) REPO="${2:-}"; shift 2 ;;
+    --repo=*) REPO="${1#*=}"; shift ;;
+    --allow-1.0) ALLOW_10=true; shift ;;
+    --bump) FORCE_BUMP="${2:-}"; shift 2 ;;
+    --bump=*) FORCE_BUMP="${1#*=}"; shift ;;
+    --format) FORMAT="${2:-}"; shift 2 ;;
+    --format=*) FORMAT="${1#*=}"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "::error::release-plan: unknown argument: $1" >&2; usage; exit 1 ;;
+  esac
+done
+
+if [[ -z "$CMD" ]]; then
+  echo "::error::release-plan: no subcommand given" >&2; usage; exit 1
+fi
+case "$FORCE_BUMP" in auto|patch|minor|major) ;; *) echo "::error::release-plan: bad --bump value: $FORCE_BUMP" >&2; exit 1 ;; esac
+
+# Default format per subcommand.
+if [[ -z "$FORMAT" ]]; then
+  case "$CMD" in
+    plan) FORMAT="json" ;;
+    publish-list) FORMAT="json" ;;
+    *) FORMAT="bare" ;;
+  esac
+fi
+
+# Resolve repo root.
+if [[ -z "$REPO" ]]; then
+  REPO="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
+fi
+cd "$REPO"
+
+MODULES=()
+PLUGINS=()
+VERSIONS_TOML="versions.toml"
+CARGO_TOML="cli/Cargo.toml"
+
+# Derive MODULES from versions.toml [modules] keys — no hardcoded list. Adding
+# a module to [modules] (and applying the devlens-library convention plugin to
+# its build.gradle.kts) makes it a release-plan-tracked module automatically.
+# bash 3.2-safe word splitting (module names are simple identifiers: [A-Za-z0-9-]).
+read_modules_section() {
+  awk '
+    $0=="[modules]" { in_sect=1; next }
+    /^\[/           { in_sect=0 }
+    in_sect {
+      eq=index($0,"=")
+      if (eq>0) {
+        k=substr($0,1,eq-1); sub(/^[ \t]+/,"",k); sub(/[ \t]+$/,"",k)
+        if (k != "") print k
+      }
+    }
+  ' "$1"
+}
+while IFS= read -r __m; do
+  [[ -n "$__m" ]] && MODULES+=("$__m")
+done < <(read_modules_section "$VERSIONS_TOML")
+
+# PLUGINS = MODULES minus "core". "core" is the non-plugin SDK base (the cascade
+# source — when core bumps, every plugin gets a min patch bump). Match by exact
+# name to avoid false positives on substrings.
+for __m in "${MODULES[@]}"; do
+  [[ "$__m" != "core" ]] && PLUGINS+=("$__m")
+done
+unset __m
+
+# ───────────────── small helpers ─────────────────
+die() { echo "::error::release-plan: $*" >&2; exit "${2:-1}"; }
+log() { echo "release-plan: $*" >&2; }
+
+# read_toml_field <file> <section> <key>  → echoes value (quotes stripped)
+read_toml_field() {
+  awk -v sect="[$2]" -v key="$3" '
+    $0==sect { in_sect=1; next }
+    /^\[/    { in_sect=0 }
+    in_sect {
+      eq=index($0,"=")
+      if (eq>0) {
+        k=substr($0,1,eq-1); sub(/^[ \t]+/,"",k); sub(/[ \t]+$/,"",k)
+        if (k==key) {
+          v=substr($0,eq+1); sub(/^[ \t]+/,"",v)
+          sub(/^"/,"",v); sub(/".*$/,"",v)
+          print v; exit
+        }
+      }
+    }
+  ' "$1"
+}
+
+bom_declared()     { read_toml_field "$VERSIONS_TOML" "bom" "version"; }
+module_declared()  { read_toml_field "$VERSIONS_TOML" "modules" "$1"; }
+
+# semver_cmp <a> <b> → prints -1 | 0 | 1
+semver_cmp() {
+  awk -F. -v a="$1" -v b="$2" 'BEGIN{
+    split(a,pa,"."); split(b,pb,".");
+    for(i=1;i<=3;i++){ pa[i]=+pa[i]; pb[i]=+pb[i] }
+    if(pa[1]<pb[1]){print -1;exit} if(pa[1]>pb[1]){print 1;exit}
+    if(pa[2]<pb[2]){print -1;exit} if(pa[2]>pb[2]){print 1;exit}
+    if(pa[3]<pb[3]){print -1;exit} if(pa[3]>pb[3]){print 1;exit}
+    print 0
+  }'
+}
+semver_gt() { [[ "$(semver_cmp "$1" "$2")" == "1" ]]; }
+semver_max() {
+  local best="$1"; shift
+  local v
+  for v in "$@"; do [[ "$(semver_cmp "$v" "$best")" == "1" ]] && best="$v"; done
+  echo "$best"
+}
+major_of() { cut -d. -f1 <<<"$1"; }
+bump_patch() { awk -F. '{print $1"."$2"."($3+1)}' <<<"$1"; }
+bump_minor() { awk -F. '{print $1"."($2+1)".0"}' <<<"$1"; }
+bump_major() { awk -F. '{print ($1+1)".0.0"}' <<<"$1"; }
+
+apply_bump() {  # <type> <version>
+  case "$1" in patch) bump_patch "$2" ;; minor) bump_minor "$2" ;; major) bump_major "$2" ;; *) die "bad bump type: $1" ;; esac
+}
+
+# bump_label <rel> <tgt> → patch|minor|major|none (the semver action actually applied)
+bump_label() {
+  local rel="$1" tgt="$2"
+  [[ "$(semver_cmp "$tgt" "$rel")" == "0" ]] && { echo none; return; }
+  if [[ "$(major_of "$tgt")" -gt "$(major_of "$rel")" ]]; then echo major
+  elif [[ "$(cut -d. -f2 <<<"$tgt")" -gt "$(cut -d. -f2 <<<"$rel")" ]]; then echo minor
+  else echo patch
+  fi
+}
+
+# latest_tag <glob>
+latest_tag() { git tag --sort=-version:refname -l "$1" 2>/dev/null | head -n1 || true; }
+
+# module_released <m> → version from latest <m>-v* tag, else declared (transition baseline)
+module_released() {
+  local m="$1" t
+  t="$(latest_tag "${m}-v*")"
+  if [[ -n "$t" ]]; then echo "${t#${m}-v}"; else module_declared "$m"; fi
+}
+
+# basis_for <m> → latest <m>-v* tag (the per-module release baseline to diff
+# from), or "" (no per-module tag yet → compute_plan treats the module as a
+# transition no-op until bootstrap tags exist). M2: removed dead decl lookup
+# and no-op if-branch; this function is purely "latest <m>-v* tag or empty".
+basis_for() {
+  local m="$1" t
+  t="$(latest_tag "${m}-v*")"
+  if [[ -n "$t" ]]; then echo "$t"; else echo ""; fi
+}
+
+# bom_released → version of the latest overall release tag (bare v<semver>),
+# else the declared [bom] version when no release has happened yet. M2: single
+# query (was double); the 'v[0-9]*' glob excludes module-style tags
+# (<module>-v…). Note: this reflects the RELEASED BOM (latest v* tag), used to
+# decide whether a new BOM must advance; it is distinct from bom_declared().
+bom_released() {
+  local t; t="$(git tag --sort=-version:refname -l 'v[0-9]*' 2>/dev/null | head -n1 || true)"
+  if [[ -n "$t" ]]; then echo "${t#v}"; else bom_declared; fi
+}
+
+# ───────────────── core: compute plan ─────────────────
+# Emits a plan record on stdout as a set of lines:
+#   KEY=VALUE     (top-level fields)
+#   MODULE\t<m>\t<rel>\t<decl>\t<tgt>\t<cls>\t<trig>   (one per module)
+# consumed by formatters. Indexed arrays (bash 3.2-safe; no associative arrays).
+# idx_of <m> → index of m in MODULES, or -1 if absent (M10: callers MUST guard
+# the -1 path — never index TGT[idx] with a possibly-negative value; bash 3.2
+# on macOS has no negative-index support and bash 4+ would silently return the
+# last element, masking a logic error).
+idx_of() { local i m="$1"; for ((i=0;i<${#MODULES[@]};i++)); do [[ "${MODULES[$i]}" == "$m" ]] && echo "$i" && return; done; echo "-1"; }
+# idx_of_strict <m> → index, or die (used where m is expected to always exist).
+idx_of_strict() { local i; i="$(idx_of "$1")"; [[ "$i" == "-1" ]] && die "idx_of: module not in MODULES: $1"; echo "$i"; }
+
+compute_plan() {
+  local n=${#MODULES[@]}
+  # parallel indexed arrays
+  local REL=() DEC=() CHG=() CLS=() TRIG=() TGT=()
+  local i
+  for ((i=0;i<n;i++)); do REL+=( ""); DEC+=( ""); CHG+=(false); CLS+=(none); TRIG+=(none); TGT+=( ""); done
+
+  local m basis path_diff api_diff removals additions cls rel decl
+  for ((i=0;i<n;i++)); do
+    m="${MODULES[$i]}"
+    rel="$(module_released "$m")"
+    decl="$(module_declared "$m")"
+    REL[$i]="$rel"; DEC[$i]="$decl"; TGT[$i]="$rel"
+    basis="$(basis_for "$m")"
+    if [[ -z "$basis" ]]; then
+      TGT[$i]="$decl"; continue # transition: no per-module tag → safe no-op
+    fi
+    path_diff="$(git diff --name-only "$basis"..HEAD -- "sdk/android/$m/" 2>/dev/null || true)"
+    if [[ -z "$path_diff" ]]; then continue; fi
+    api_diff="$(git diff "$basis"..HEAD -- "sdk/android/$m/api/" 2>/dev/null || true)"
+    removals="$(grep -E '^-[^-]' <<<"$api_diff" | grep -v '^---' || true)"
+    additions="$(grep -E '^\+[^+]' <<<"$api_diff" | grep -v '^+++' || true)"
+    if [[ -n "$removals" ]]; then cls=breaking
+    elif [[ -n "$additions" ]]; then cls=api-add
+    else cls=patch
+    fi
+    CHG[$i]=true; CLS[$i]="$cls"; TRIG[$i]="$cls"
+  done
+
+  # Compute BUMP type (patch/minor/major) per module, separate from CLS.
+  # CLS stays the real classification; BUMP is the actual semver action.
+  local BUMP=()
+  for ((i=0;i<n;i++)); do BUMP+=(none); done
+  for ((i=0;i<n;i++)); do
+    [[ "${CHG[$i]}" != "true" ]] && continue
+    local bt
+    if [[ "$FORCE_BUMP" != "auto" ]]; then
+      bt="$FORCE_BUMP"; TRIG[$i]="forced-$FORCE_BUMP"
+    elif [[ "${CLS[$i]}" == "breaking" ]]; then
+      if [[ "$(major_of "${REL[$i]}")" -eq 0 ]]; then bt=minor; else bt=major; fi
+    elif [[ "${CLS[$i]}" == "api-add" ]]; then bt=minor
+    else bt=patch
+    fi
+    BUMP[$i]="$bt"
+    TGT[$i]="$(apply_bump "$bt" "${REL[$i]}")"
+  done
+
+  # Cascade: core → plugins (architect override).
+  local core_idx; core_idx="$(idx_of_strict core)"
+  local core_bumped=false
+  if semver_gt "${TGT[$core_idx]}" "${REL[$core_idx]}"; then core_bumped=true; fi
+  if [[ "$core_bumped" == "true" ]]; then
+    local p j cascade_target
+    for p in "${PLUGINS[@]}"; do
+      j="$(idx_of_strict "$p")"
+      cascade_target="$(bump_patch "${REL[$j]}")"
+      if [[ "${CHG[$j]}" == "true" ]]; then
+        if semver_gt "$cascade_target" "${TGT[$j]}"; then TGT[$j]="$cascade_target"; TRIG[$j]="cascade+${CLS[$j]}"; fi
+      else
+        TGT[$j]="$cascade_target"; TRIG[$j]="cascade"
+      fi
+    done
+  fi
+
+  # Pre-1.0 hard guard: any target with major>0 while released major==0 → exit 3.
+  for ((i=0;i<n;i++)); do
+    if [[ "$(major_of "${TGT[$i]}")" -gt 0 && "$(major_of "${REL[$i]}")" -eq 0 ]]; then
+      if [[ "$ALLOW_10" != "true" ]]; then
+        die "pre-1.0 major guard: ${MODULES[$i]} would graduate to ${TGT[$i]} (major>0) while current major==0. Pass --allow-1.0 to graduate to 1.0 manually." 3
+      fi
+    fi
+  done
+
+  # CLI changed: path diff on cli/ since the latest release tag. Computed FIRST
+  # because H1 makes it a release trigger — a CLI-only bugfix MUST still deliver
+  # a new BOM (and thus a new v* tag / binary). The CLI version always tracks
+  # the BOM, so advancing the BOM is how a CLI change ships.
+  local vtag cli_changed=false
+  vtag="$(git tag --sort=-version:refname -l 'v[0-9]*' 2>/dev/null | head -n1 || true)"
+  if [[ -z "$vtag" ]]; then
+    cli_changed=true # first release
+  else
+    local d; d="$(git diff --name-only "$vtag"..HEAD -- cli/ Cargo.toml Cargo.lock 2>/dev/null || true)"
+    [[ -n "$d" ]] && cli_changed=true
+  fi
+
+  # BOM = max(module targets); CLI tracks BOM.
+  # (H1 + H4) The BOM MUST advance whenever ANY constrained module changes OR
+  # the CLI changes. Otherwise (a) a CLI-only bugfix never ships, and (b) a
+  # sub-max module bump leaves the BOM pin stale (BOM == max-of-modules → tag
+  # already exists → republish skipped → consumers pull the old pin). So when a
+  # release trigger fired but the max module target would not itself advance
+  # the released BOM, patch-bump the released BOM. noop only when nothing
+  # changed. Pre-1.0 hard guard above still applies (a patch bump cannot
+  # graduate 0.x → 1.0).
+  local bom_rel bom_decl
+  bom_rel="$(bom_released)"
+  bom_decl="$(bom_declared)"
+  local bom_tgts=()
+  for ((i=0;i<n;i++)); do bom_tgts+=( "${TGT[$i]}" ); done
+  local max_module_tgt; max_module_tgt="$(semver_max "${bom_tgts[@]}")"
+
+  local any_module_bumped=false
+  for ((i=0;i<n;i++)); do
+    if semver_gt "${TGT[$i]}" "${REL[$i]}"; then any_module_bumped=true; break; fi
+  done
+
+  local noop=true
+  if [[ "$any_module_bumped" == "true" || "$cli_changed" == "true" ]]; then noop=false; fi
+
+  local bom_tgt
+  if [[ "$noop" == "true" ]]; then
+    bom_tgt="$bom_decl"
+  else
+    bom_tgt="$max_module_tgt"
+    # If max-of-modules would not advance the released BOM, force a patch
+    # advance so the BOM republishes with the new pin / CLI version.
+    if [[ "$(semver_cmp "$bom_tgt" "$bom_rel")" != "1" ]]; then
+      bom_tgt="$(bump_patch "$bom_rel")"
+    fi
+  fi
+
+  echo "NOOP=$noop"
+  echo "BOM_REL=$bom_rel"
+  echo "BOM_DECL=$bom_decl"
+  echo "BOM_TGT=$bom_tgt"
+  echo "CLI_CHANGED=$cli_changed"
+  for ((i=0;i<n;i++)); do
+    printf 'MODULE\t%s\t%s\t%s\t%s\t%s\t%s\n' "${MODULES[$i]}" "${REL[$i]}" "${DEC[$i]}" "${TGT[$i]}" "${CLS[$i]}" "${TRIG[$i]}"
+  done
+}
+
+# ───────────────── formatters ─────────────────
+plan_to_json() {
+  local plan="$1"
+  local noop bom_rel bom_decl bom_tgt cli_changed
+  noop="$(awk -F= '$1=="NOOP"{print $2}' <<<"$plan")"
+  bom_rel="$(awk -F= '$1=="BOM_REL"{print $2}' <<<"$plan")"
+  bom_decl="$(awk -F= '$1=="BOM_DECL"{print $2}' <<<"$plan")"
+  bom_tgt="$(awk -F= '$1=="BOM_TGT"{print $2}' <<<"$plan")"
+  cli_changed="$(awk -F= '$1=="CLI_CHANGED"{print $2}' <<<"$plan")"
+
+  echo "{"
+  echo "  \"noop\": $noop,"
+  echo "  \"bom\": { \"previous\": \"$bom_rel\", \"current\": \"$bom_decl\", \"next\": \"$bom_tgt\" },"
+  echo "  \"cli\": { \"previous\": \"$bom_rel\", \"next\": \"$bom_tgt\", \"changed\": $cli_changed },"
+  echo "  \"modules\": {"
+  local first=1 m rel dec tgt cls trig bl
+  while IFS=$'\t' read -r _ m rel dec tgt cls trig; do
+    [[ "$m" == "MODULE" ]] && continue
+    [[ $first -eq 0 ]] && echo ","
+    first=0
+    bl="$(bump_label "$rel" "$tgt")"
+    local changed=false
+    [[ "$(semver_cmp "$tgt" "$rel")" != "0" ]] && changed=true
+    printf '    "%s": { "previous": "%s", "current": "%s", "next": "%s", "bump": "%s", "trigger": "%s", "changed": %s }' \
+      "$m" "$rel" "$dec" "$tgt" "$bl" "$trig" "$changed"
+  done <<<"$(grep '^MODULE' <<<"$plan")"
+  echo ""
+  echo "  },"
+
+  # publishes + tags + skipped
+  local publishes="" tags="" skipped=""
+  while IFS=$'\t' read -r _ m rel _ tgt _ trig; do
+    [[ "$m" == "MODULE" ]] && continue
+    if [[ "$(semver_cmp "$tgt" "$rel")" != "0" ]]; then
+      publishes+="$m "
+      tags+="${m}-v${tgt} "
+    else
+      skipped+="$m "
+    fi
+  done <<<"$(grep '^MODULE' <<<"$plan")"
+  if [[ "$noop" != "true" ]]; then publishes+="bom "; tags+="bom-v${bom_tgt} "; tags+="v${bom_tgt} "; fi
+  echo "  \"publishes\": [ $(json_array "$publishes") ],"
+  echo "  \"tags\": [ $(json_array "$tags") ],"
+  echo "  \"skipped\": \"${skipped% }\""
+  echo "}"
+}
+
+json_array() {  # space-separated → "a", "b"
+  local out="" w
+  for w in $1; do out+="\"$w\", "; done
+  out="${out%, }"
+  echo "$out"
+}
+
+plan_to_markdown() {
+  local plan="$1"
+  local noop bom_tgt bom_rel bom_decl cli_changed
+  noop="$(awk -F= '$1=="NOOP"{print $2}' <<<"$plan")"
+  bom_tgt="$(awk -F= '$1=="BOM_TGT"{print $2}' <<<"$plan")"
+  bom_rel="$(awk -F= '$1=="BOM_REL"{print $2}' <<<"$plan")"
+  bom_decl="$(awk -F= '$1=="BOM_DECL"{print $2}' <<<"$plan")"
+  cli_changed="$(awk -F= '$1=="CLI_CHANGED"{print $2}' <<<"$plan")"
+
+  if [[ "$noop" == "true" ]]; then
+    echo "## No release needed"
+    echo ""
+    echo "No module or CLI changes since the last release. Nothing to publish."
+    return
+  fi
+
+  echo "## Release v${bom_tgt}"
+  echo ""
+  local pubs=""
+  while IFS=$'\t' read -r _ m rel _ tgt cls trig; do
+    [[ "$m" == "MODULE" ]] && continue
+    [[ "$(semver_cmp "$tgt" "$rel")" != "0" ]] && pubs+="$m "
+  done <<<"$(grep '^MODULE' <<<"$plan")"
+  pubs+="bom"
+  local cli_pub="no"
+  [[ "$cli_changed" == "true" ]] && cli_pub="yes"
+  echo "**Publishes:** ${pubs% } (CLI binary: $cli_pub)"
+  echo ""
+  echo "| Artifact | Previous | New | Bump | Trigger |"
+  echo "|----------|----------|-----|------|---------|"
+  local m rel dec tgt cls trig bl
+  while IFS=$'\t' read -r _ m rel dec tgt cls trig; do
+    [[ "$m" == "MODULE" ]] && continue
+    if [[ "$(semver_cmp "$tgt" "$rel")" != "0" ]]; then
+      bl="$(bump_label "$rel" "$tgt")"
+      printf '| %s | %s | %s | %s | %s |\n' "$m" "$rel" "$tgt" "$bl" "$trig"
+    fi
+  done <<<"$(grep '^MODULE' <<<"$plan")"
+  echo "| bom | $bom_rel | $bom_tgt | — | max(modules) |"
+  echo "| cli | $bom_rel | $bom_tgt | — | tracks bom (binary: $cli_pub) |"
+  echo ""
+  local tags=""
+  while IFS=$'\t' read -r _ m rel _ tgt _ _; do
+    [[ "$m" == "MODULE" ]] && continue
+    [[ "$(semver_cmp "$tgt" "$rel")" != "0" ]] && tags+="${m}-v${tgt}, "
+  done <<<"$(grep '^MODULE' <<<"$plan")"
+  tags+="bom-v${bom_tgt}, v${bom_tgt}"
+  echo "**Tags to create:** ${tags}"
+  echo ""
+  local skipped=""
+  while IFS=$'\t' read -r _ m rel _ tgt _ _; do
+    [[ "$m" == "MODULE" ]] && continue
+    [[ "$(semver_cmp "$tgt" "$rel")" == "0" ]] && skipped+="$m, "
+  done <<<"$(grep '^MODULE' <<<"$plan")"
+  if [[ -n "$skipped" ]]; then
+    echo "**Skipped (unchanged):** ${skipped%, }"
+  fi
+}
+
+plan_to_bare() {
+  local plan="$1" noop bom_tgt bom_decl
+  noop="$(awk -F= '$1=="NOOP"{print $2}' <<<"$plan")"
+  bom_tgt="$(awk -F= '$1=="BOM_TGT"{print $2}' <<<"$plan")"
+  bom_decl="$(awk -F= '$1=="BOM_DECL"{print $2}' <<<"$plan")"
+  if [[ "$noop" == "true" ]]; then echo "$bom_decl"; else echo "$bom_tgt"; fi
+}
+
+# ───────────────── subcommand: plan ─────────────────
+do_plan() {
+  local plan; plan="$(compute_plan)"
+  # H6: surface bootstrap-inert state to release-prepare (and the CI PR comment)
+  # so a missing-tag migration can't ship silently inert.
+  warn_bootstrap_inert
+  case "$FORMAT" in
+    json) plan_to_json "$plan" ;;
+    markdown) plan_to_markdown "$plan" ;;
+    bare) plan_to_bare "$plan" ;;
+    *) die "bad --format: $FORMAT (want json|markdown|bare)" ;;
+  esac
+}
+
+# ───────────────── subcommand: apply ─────────────────
+do_apply() {
+  local plan; plan="$(compute_plan)"
+  local noop bom_tgt bom_decl cli_changed
+  noop="$(awk -F= '$1=="NOOP"{print $2}' <<<"$plan")"
+  bom_tgt="$(awk -F= '$1=="BOM_TGT"{print $2}' <<<"$plan")"
+  bom_decl="$(awk -F= '$1=="BOM_DECL"{print $2}' <<<"$plan")"
+  cli_changed="$(awk -F= '$1=="CLI_CHANGED"{print $2}' <<<"$plan")"
+
+  if [[ "$noop" == "true" ]]; then
+    log "no module or CLI changes → nothing to apply (no-op)."
+    # Still emit a no-op PR body to stdout (callers may capture it).
+    plan_to_markdown "$plan"
+    exit 0
+  fi
+
+  # Idempotency: if versions.toml already matches all targets → no-op.
+  local m rel dec tgt need_write=false
+  while IFS=$'\t' read -r _ m rel dec tgt cls trig; do
+    [[ "$m" == "MODULE" ]] && continue
+    if [[ "$(semver_cmp "$tgt" "$rel")" != "0" && "$dec" != "$tgt" ]]; then need_write=true; fi
+  done <<<"$(grep '^MODULE' <<<"$plan")"
+  if [[ "$bom_decl" != "$bom_tgt" ]]; then need_write=true; fi
+
+  if [[ "$need_write" != "true" ]]; then
+    log "versions.toml already at target (idempotent no-op)."
+    plan_to_markdown "$plan"
+    exit 0
+  fi
+
+  # 1) Rewrite ONLY the version value lines in versions.toml, preserving every
+  #    header comment and blank line (M9). Operators rely on the bootstrap /
+  #    baseline notes at the top of the file; a wholesale rewrite would silently
+  #    drop them. Set BOM_VAL / MOD_OVERRIDES for the awk helper.
+  BOM_VAL="$bom_tgt"
+  MOD_OVERRIDES=""
+  while IFS=$'\t' read -r _ m rel dec tgt cls trig; do
+    [[ "$m" == "MODULE" ]] && continue
+    local v="$dec"
+    [[ "$(semver_cmp "$tgt" "$rel")" != "0" ]] && v="$tgt"
+    MOD_OVERRIDES+="$m=$v "
+  done <<<"$(grep '^MODULE' <<<"$plan")"
+  toml_set_versions "$VERSIONS_TOML"
+
+  # 2) Stamp cli/Cargo.toml [package].version, scoped to the [package] section
+  #    via an awk state machine (M6). This is robust to a future manifest shape
+  #    where another column-0 `version = …` could appear, and it avoids the
+  #    BSD/GNU sed portability split (no `0,/regex/` on BSD sed). CLI is
+  #    otherwise inviolate — only this one version line is touched.
+  if [[ -f "$CARGO_TOML" ]]; then
+    cargo_set_version "$CARGO_TOML" "$bom_tgt"
+    # 3) Refresh Cargo.lock so the committed lock reflects the new package
+    #    version (M11: this really does update the lock — `cargo metadata`
+    #    resolves the graph and rewrites Cargo.lock when a manifest changed; for
+    #    an own-version bump no dependency resolution / network is needed).
+    if command -v cargo >/dev/null 2>&1; then
+      ( cargo metadata --format-version 1 >/dev/null 2>&1 \
+          || log "cargo metadata failed — Cargo.lock may need a manual refresh" )
+    else
+      log "cargo not found — Cargo.lock not refreshed here (release-prepare CI refreshes it)."
+    fi
+  fi
+
+  log "applied: bom → $bom_tgt."
+  # Emit PR body on stdout.
+  plan_to_markdown "$plan"
+}
+
+# toml_set_versions <file>: reads BOM_VAL and MOD_OVERRIDES from the env and
+# rewrites only the matching value lines in-place (M9). BOM_VAL replaces the
+# `version = "…"` line under [bom]; MOD_OVERRIDES is a space-separated list of
+# `name=value` pairs, each replacing `<name> = "…"` under [modules]. Every other
+# line (comments, blanks, other keys) passes through verbatim.
+toml_set_versions() {
+  local file="$1"
+  awk -v bom="$BOM_VAL" -v mods="$MOD_OVERRIDES" '
+    BEGIN {
+      mc = split(mods, arr, " ")
+      for (k = 1; k <= mc; k++) {
+        eq = index(arr[k], "=")
+        if (eq > 0) {
+          mn = substr(arr[k], 1, eq - 1); mv = substr(arr[k], eq + 1)
+          modname[++n] = mn; modval[mn] = mv
+        }
+      }
+    }
+    /^\[/ { sect = $0 }
+    sect == "[bom]" && /^version[ \t]*=/ {
+      sub(/=[ \t]*".*"/, "= \"" bom "\"")
+      print; next
+    }
+    sect == "[modules]" {
+      eq = index($0, "=")
+      if (eq > 0) {
+        key = substr($0, 1, eq - 1); sub(/[ \t]+$/, "", key); sub(/^[ \t]+/, "", key)
+        for (k = 1; k <= n; k++) {
+          if (key == modname[k]) { sub(/=[ \t]*".*"/, "= \"" modval[key] "\""); break }
+        }
+      }
+    }
+    { print }
+  ' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+}
+
+# cargo_set_version <file> <version>: replace `version = "…"` ONLY inside the
+# [package] section (M6). awk state machine toggles in_pkg on every `[header]`.
+cargo_set_version() {
+  local file="$1" ver="$2"
+  awk -v v="$ver" '
+    /^\[/ { in_pkg = ($0 == "[package]") }
+    in_pkg && /^version[ \t]*=/ { sub(/=[ \t]*".*"/, "= \"" v "\"") }
+    { print }
+  ' "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+}
+
+# ───────────────── subcommand: publish-list ─────────────────
+do_publish_list() {
+  [[ "$FORMAT" != "json" ]] && die "publish-list only supports --format json"
+  local bom_ver; bom_ver="$(bom_declared)"
+  local cli_t; cli_t="$(git tag --sort=-version:refname -l 'v[0-9]*' | head -n1 || true)"
+  local cli_changed=false
+  if [[ -z "$cli_t" ]]; then cli_changed=true
+  else [[ -n "$(git diff --name-only "$cli_t"..HEAD -- cli/ Cargo.toml Cargo.lock 2>/dev/null || true)" ]] && cli_changed=true
+  fi
+  local release_tag="v${bom_ver}"
+  local release_status; release_status="$(tag_status "$release_tag")"
+  local publish_binary=false
+  [[ "$release_status" == "pending" && "$cli_changed" == "true" ]] && publish_binary=true
+
+  echo "{"
+  echo "  \"bom_version\": \"$bom_ver\","
+  echo "  \"release_tag\": \"$release_tag\","
+  echo "  \"release_status\": \"$release_status\","
+  echo "  \"cli\": { \"version\": \"$bom_ver\", \"changed\": $cli_changed, \"publish_binary\": $publish_binary, \"publish_homebrew\": $publish_binary },"
+  echo "  \"bom\": { \"version\": \"$bom_ver\", \"tag\": \"bom-v$bom_ver\", \"status\": \"$(tag_status "bom-v$bom_ver")\" },"
+  echo "  \"modules\": ["
+  local first=1 m decl tag status
+  for m in "${MODULES[@]}"; do
+    decl="$(module_declared "$m")"
+    tag="${m}-v${decl}"
+    status="$(tag_status "$tag")"
+    [[ $first -eq 0 ]] && echo ","
+    first=0
+    printf '    { "name": "%s", "version": "%s", "tag": "%s", "status": "%s" }' "$m" "$decl" "$tag" "$status"
+  done
+  echo ""
+  echo "  ]"
+  echo "}"
+}
+
+tag_status() {
+  # H5(b): consult the REMOTE first — a previous run (possibly from another
+  # worker) may have pushed this tag, and a fresh checkout's local refs can be
+  # stale, which would cause an idempotent resume to redeploy and get hard-
+  # rejected by Maven Central. Fall back to the local tag when there is no
+  # remote or the network is unavailable (release-plan is otherwise network-free
+  # and is also run locally / in tests with no origin).
+  local tag="$1"
+  if git ls-remote origin "refs/tags/$tag" 2>/dev/null | grep -q .; then
+    echo done
+  elif git tag -l "$tag" | grep -q .; then
+    echo done
+  else
+    echo pending
+  fi
+}
+
+# ───────────────── subcommand: verify ─────────────────
+do_verify() {
+  local drifts=()
+  # 1) versions.toml must exist and parse.
+  [[ -f "$VERSIONS_TOML" ]] || drifts+=("versions.toml missing")
+  local bom_ver; bom_ver="$(bom_declared 2>/dev/null || echo "")"
+  [[ -n "$bom_ver" ]] || drifts+=("[bom].version missing/unparseable")
+  for m in "${MODULES[@]}"; do
+    local v; v="$(module_declared "$m" 2>/dev/null || echo "")"
+    [[ -n "$v" ]] || drifts+=("[modules].$m missing/unparseable")
+  done
+
+  # 2) cli/Cargo.toml version == [bom] version.
+  if [[ -f "$CARGO_TOML" ]]; then
+    local cargo_ver
+    cargo_ver="$(awk -F\" '/^version = "/{print $2; exit}' "$CARGO_TOML")"
+    [[ "$cargo_ver" == "$bom_ver" ]] || drifts+=("cli/Cargo.toml version ($cargo_ver) != [bom].version ($bom_ver)")
+  fi
+
+  # 3) No tag may be NEWER than the declared version (tag racing ahead of versions.toml).
+  for m in "${MODULES[@]}"; do
+    local decl t tv
+    decl="$(module_declared "$m")"
+    t="$(latest_tag "${m}-v*")"
+    if [[ -n "$t" ]]; then
+      tv="${t#${m}-v}"
+      if [[ "$(semver_cmp "$tv" "$decl")" == "1" ]]; then
+        drifts+=("$m tag $t is newer than versions.toml ($decl)")
+      fi
+    fi
+  done
+  local bt; bt="$(git tag --sort=-version:refname -l 'v[0-9]*' | head -n1 || true)"
+  if [[ -n "$bt" ]]; then
+    local bv="${bt#v}"
+    if [[ "$(semver_cmp "$bv" "$bom_ver")" == "1" ]]; then
+      drifts+=("release tag $bt is newer than [bom].version ($bom_ver)")
+    fi
+  fi
+
+  if (( ${#drifts[@]} )); then
+    for d in "${drifts[@]}"; do echo "::error::release-plan drift: $d" >&2; done
+    exit 2
+  fi
+  log "versions.toml ↔ tags ↔ cli/Cargo.toml consistent."
+  # H6: warn (not fail) when any publishable module has zero <module>-v* tags —
+  # the system is silently inert until bootstrap tags exist. Doesn't fail the
+  # gate because the versions.toml/tags/Cargo state is still internally consistent.
+  warn_bootstrap_inert
+}
+
+# warn_bootstrap_inert: loud ::warning:: when a publishable module has no
+# per-module tag (H6). Called from --verify and --plan. No tag ⇒ --plan is a
+# no-op for that module ⇒ landing the PR without bootstrap tags is silently
+# inert. The warning surfaces the one-shot fix: --bootstrap-tags.
+warn_bootstrap_inert() {
+  local missing=() m t
+  for m in "${MODULES[@]}"; do
+    t="$(latest_tag "${m}-v*")"
+    [[ -n "$t" ]] || missing+=("$m")
+  done
+  if (( ${#missing[@]} )); then
+    echo "::warning::release-plan: bootstrap-inert (H6): publishable modules with no <module>-v* tag: ${missing[*]}." >&2
+    echo "::warning::release-plan: until bootstrap tags exist, --plan is a no-op for these modules. Run on the migration/merge commit: ./scripts/release-plan --bootstrap-tags" >&2
+  fi
+}
+
+# ───────────────── subcommand: bom-version ─────────────────
+do_bom_version() { bom_declared; }
+
+# ───────────────── subcommand: bootstrap-tags ─────────────────
+# H6: one-shot migration helper. Creates <module>-v<declared> + bom-v<declared>
+# at HEAD for every publishable module / BOM missing a tag. Run this on the
+# commit that lands this branch into develop so the first new-system release can
+# detect changes from that point. Idempotent (skips tags that already exist).
+# Pushes to origin so CI (--verify / --plan consult ls-remote origin) can see
+# the tags; if the push fails it leaves local tags and prints the manual command.
+do_bootstrap_tags() {
+  local bom_ver; bom_ver="$(bom_declared)"
+  [[ -n "$bom_ver" ]] || die "cannot bootstrap: [bom].version missing in $VERSIONS_TOML"
+
+  local created=() skipped=() m decl tag
+  for m in "${MODULES[@]}"; do
+    decl="$(module_declared "$m")"
+    [[ -n "$decl" ]] || die "cannot bootstrap: [modules].$m missing in $VERSIONS_TOML"
+    tag="${m}-v${decl}"
+    if git rev-parse -q --verify "refs/tags/$tag" >/dev/null 2>&1; then
+      skipped+=("$tag")
+    else
+      git tag "$tag" HEAD && created+=("$tag")
+    fi
+  done
+  local btag="bom-v${bom_ver}"
+  if git rev-parse -q --verify "refs/tags/$btag" >/dev/null 2>&1; then
+    skipped+=("$btag")
+  else
+    git tag "$btag" HEAD && created+=("$btag")
+  fi
+
+  log "bootstrap tags created at HEAD: ${created[*]:-<none>}"
+  log "already present (skipped): ${skipped[*]:-<none>}"
+
+  # Push best-effort so CI (which uses ls-remote origin) sees the tags.
+  if [[ ${#created[@]} -gt 0 ]] && git remote get-url origin >/dev/null 2>&1; then
+    if git push origin "${created[@]}" 2>/dev/null; then
+      log "pushed ${#created[@]} tag(s) to origin."
+    else
+      echo "::warning::release-plan: created tags locally but failed to push to origin. Push manually:" >&2
+      printf '  git push origin %s\n' "${created[*]}" >&2
+    fi
+  elif [[ ${#created[@]} -gt 0 ]]; then
+    echo "::warning::release-plan: no 'origin' remote — bootstrap tags created locally only. Push them manually." >&2
+    printf '  git push origin %s\n' "${created[*]}" >&2
+  fi
+}
+
+# ───────────────── dispatch ─────────────────
+case "$CMD" in
+  plan)           do_plan ;;
+  apply)          do_apply ;;
+  publish-list)   do_publish_list ;;
+  verify)         do_verify ;;
+  bom-version)    do_bom_version ;;
+  bootstrap-tags) do_bootstrap_tags ;;
+  *) die "unknown subcommand: $CMD" ;;
+esac

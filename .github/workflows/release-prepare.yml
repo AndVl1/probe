@@ -1,21 +1,38 @@
 name: Prepare Release
 
+# Thin caller of scripts/release-plan. The script owns all version/bump/cascade/
+# report logic; this workflow just runs `--apply`, commits the result, and opens
+# a PR. If the plan is a no-op (no module changed since its last per-module tag),
+# the workflow posts a notice and exits without opening a PR.
+
 on:
   workflow_dispatch:
     inputs:
       bump_override:
-        description: 'Force version bump type (leave empty for auto-detect via BCV)'
+        description: 'Force bump type for changed modules (auto = per-module BCV .api classification)'
         required: false
         type: choice
+        default: auto
         options:
           - auto
           - patch
           - minor
           - major
+      allow_1_0:
+        description: 'Allow 1.0 graduation (only relevant with bump=major while major==0)'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
   pull-requests: write
+
+# H2: serialize prepare runs so two release-prepare invocations can't race the
+# same release branch / Maven Central redeploy. cancel-in-progress MUST be false.
+concurrency:
+  group: release-prepare
+  cancel-in-progress: false
 
 jobs:
   prepare:
@@ -27,150 +44,87 @@ jobs:
           ref: develop
           fetch-depth: 0
 
-      - name: Determine new version
-        id: version
-        env:
-          BUMP_OVERRIDE: ${{ inputs.bump_override }}
+      - name: Set up Rust (for Cargo.lock refresh during --apply)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Compute release plan (read-only)
+        id: plan
         run: |
-          CURRENT_VERSION=$(cat VERSION)
-          MAJOR=$(echo "$CURRENT_VERSION" | cut -d. -f1)
-          MINOR=$(echo "$CURRENT_VERSION" | cut -d. -f2)
-          PATCH=$(echo "$CURRENT_VERSION" | cut -d. -f3)
+          BUMP="${{ inputs.bump_override }}"
+          BUMP_ARG=()
+          [[ -n "$BUMP" && "$BUMP" != "auto" ]] && BUMP_ARG+=(--bump "$BUMP")
+          [[ "${{ inputs.allow_1_0 }}" == "true" ]] && BUMP_ARG+=(--allow-1.0)
 
-          BUMP="${BUMP_OVERRIDE:-auto}"
+          PLAN_JSON=$(./scripts/release-plan --plan --format=json "${BUMP_ARG[@]}")
+          # M1: jq instead of fragile sed on JSON. jq ships on ubuntu-latest.
+          NOOP=$(printf '%s' "$PLAN_JSON" | jq -r '.noop')
+          BOM_NEW=$(printf '%s' "$PLAN_JSON" | jq -r '.bom.next')
+          echo "noop=$NOOP" >> "$GITHUB_OUTPUT"
+          echo "bom_new=$BOM_NEW" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$PLAN_JSON" > /tmp/plan.json
+          echo "Plan noop=$NOOP bom_next=$BOM_NEW"
 
-          if [[ "$BUMP" == "auto" ]]; then
-            if [[ -x scripts/determine-version.sh ]]; then
-              NEW_VERSION=$(bash scripts/determine-version.sh)
-            else
-              echo "::error::scripts/determine-version.sh not found and bump_override is 'auto'."
-              echo "::error::Either create scripts/determine-version.sh (BCV-based detection) or select a bump type."
-              exit 1
-            fi
-          else
-            case "$BUMP" in
-              patch) NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))" ;;
-              minor) NEW_VERSION="${MAJOR}.$((MINOR + 1)).0" ;;
-              major) NEW_VERSION="$((MAJOR + 1)).0.0" ;;
-              *) echo "::error::Unknown bump type: $BUMP"; exit 1 ;;
-            esac
-          fi
-
-          echo "current=${CURRENT_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "new=${NEW_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Bumping version: ${CURRENT_VERSION} → ${NEW_VERSION} (bump: ${BUMP})"
+      - name: No-op notice (nothing to release)
+        if: steps.plan.outputs.noop == 'true'
+        run: |
+          echo "::notice::No modules changed since their last per-module tag — nothing to release. No PR created."
 
       - name: Check release branch does not already exist
+        if: steps.plan.outputs.noop != 'true'
         env:
-          NEW_VERSION: ${{ steps.version.outputs.new }}
+          BOM_NEW: ${{ steps.plan.outputs.bom_new }}
         run: |
-          BRANCH="release/v${NEW_VERSION}"
+          BRANCH="release/v${BOM_NEW}"
           if git ls-remote --exit-code origin "refs/heads/${BRANCH}" > /dev/null 2>&1; then
-            echo "::error::Branch ${BRANCH} already exists on origin. Delete it or choose a different bump type."
+            echo "::error::Branch ${BRANCH} already exists on origin. Delete it or re-run after merging the existing one."
             exit 1
           fi
 
-      - name: Create release branch
-        env:
-          NEW_VERSION: ${{ steps.version.outputs.new }}
+      - name: Apply plan (mutate versions.toml + cli/Cargo.toml + Cargo.lock)
+        if: steps.plan.outputs.noop != 'true'
         run: |
-          git checkout -b "release/v${NEW_VERSION}"
-
-      - name: Update VERSION file
-        env:
-          NEW_VERSION: ${{ steps.version.outputs.new }}
-        run: |
-          echo "${NEW_VERSION}" > VERSION
-
-      - name: Update cli/Cargo.toml version
-        env:
-          NEW_VERSION: ${{ steps.version.outputs.new }}
-        run: |
-          # Replace only the first occurrence of version = "..." in cli/Cargo.toml
-          # (0,/pattern/ is GNU sed: starts match range from before line 1)
-          sed -i "0,/^version = \"[^\"]*\"/s//version = \"${NEW_VERSION}\"/" cli/Cargo.toml
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Regenerate Cargo.lock
-        run: |
-          # Regenerating lock file after Cargo.toml version change
-          cargo metadata --format-version 1 > /dev/null
+          BUMP="${{ inputs.bump_override }}"
+          BUMP_ARG=()
+          [[ -n "$BUMP" && "$BUMP" != "auto" ]] && BUMP_ARG+=(--bump "$BUMP")
+          [[ "${{ inputs.allow_1_0 }}" == "true" ]] && BUMP_ARG+=(--allow-1.0)
+          # --apply writes the PR body (markdown) to stdout.
+          ./scripts/release-plan --apply "${BUMP_ARG[@]}" > /tmp/pr-body.md
+          echo "--- PR body ---"
+          cat /tmp/pr-body.md
 
       - name: Configure git
+        if: steps.plan.outputs.noop != 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Commit version bump
+      - name: Create release branch and commit version state
+        if: steps.plan.outputs.noop != 'true'
         env:
-          NEW_VERSION: ${{ steps.version.outputs.new }}
+          BOM_NEW: ${{ steps.plan.outputs.bom_new }}
         run: |
-          git add VERSION cli/Cargo.toml Cargo.lock
-          git commit -m "chore: bump version to ${NEW_VERSION}"
-
-      - name: Push release branch
-        env:
-          NEW_VERSION: ${{ steps.version.outputs.new }}
-        run: |
-          git push origin "release/v${NEW_VERSION}"
-
-      - name: Build changelog
-        id: changelog
-        env:
-          NEW_VERSION: ${{ steps.version.outputs.new }}
-        run: |
-          LAST_TAG=$(git tag --sort=-version:refname | grep "^v" | head -n1)
-          if [[ -n "$LAST_TAG" ]]; then
-            CHANGES=$(git log "${LAST_TAG}..HEAD" --oneline --no-merges | head -50)
-          else
-            CHANGES=$(git log --oneline --no-merges | head -50)
-          fi
-
-          # Multiline output via GitHub Actions delimiter
-          EOF=$(dd if=/dev/urandom bs=15 count=1 status=none | base64)
-          echo "changes<<${EOF}" >> "$GITHUB_OUTPUT"
-          echo "$CHANGES" >> "$GITHUB_OUTPUT"
-          echo "${EOF}" >> "$GITHUB_OUTPUT"
+          git checkout -b "release/v${BOM_NEW}"
+          git add versions.toml cli/Cargo.toml Cargo.lock
+          git commit -m "chore(release): bump to v${BOM_NEW} per release-plan"
+          git push origin "release/v${BOM_NEW}"
 
       - name: Create pull request
+        if: steps.plan.outputs.noop != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          NEW_VERSION: ${{ steps.version.outputs.new }}
-          CURRENT_VERSION: ${{ steps.version.outputs.current }}
-          BUMP: ${{ inputs.bump_override }}
-          CHANGES: ${{ steps.changelog.outputs.changes }}
+          BOM_NEW: ${{ steps.plan.outputs.bom_new }}
         run: |
+          {
+            echo "## Release v${BOM_NEW}"
+            echo ""
+            cat /tmp/pr-body.md
+            echo ""
+            echo "---"
+            echo "Merging this PR to \`main\` triggers the **Publish Release** workflow, which publishes only the changed/cascaded modules + BOM and creates per-module tags."
+          } > /tmp/pr-final.md
+
           gh pr create \
             --base main \
-            --head "release/v${NEW_VERSION}" \
-            --title "Release v${NEW_VERSION}" \
-            --body "## Release v${NEW_VERSION}
-
-          **Version bump**: \`${CURRENT_VERSION}\` → \`${NEW_VERSION}\` (type: \`${BUMP:-auto}\`)
-
-          ## Changelog
-
-          Commits since last release tag:
-
-          \`\`\`
-          ${CHANGES}
-          \`\`\`
-
-          ## Checklist before merging
-
-          - [ ] Verify CHANGELOG / release notes are accurate
-          - [ ] Confirm API surface is intentional (run \`apiCheck\` locally)
-          - [ ] Confirm secrets are configured in repository settings
-
-          ## Required secrets (one-time setup)
-
-          | Secret | Purpose |
-          |--------|---------|
-          | \`OSSRH_USERNAME\` | Sonatype Central username |
-          | \`OSSRH_PASSWORD\` | Sonatype Central token |
-          | \`GPG_PRIVATE_KEY\` | Base64-encoded ASCII-armored GPG private key |
-          | \`GPG_PASSPHRASE\` | GPG key passphrase |
-
-          Merging this PR to \`main\` will trigger the **Publish Release** workflow automatically."
+            --head "release/v${BOM_NEW}" \
+            --title "Release v${BOM_NEW}" \
+            --body-file /tmp/pr-final.md

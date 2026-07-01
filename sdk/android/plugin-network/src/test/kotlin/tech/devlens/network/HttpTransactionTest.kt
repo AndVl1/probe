@@ -36,19 +36,20 @@ class HttpTransactionTest {
     }
 
     @Test
-    fun `toPayload contains all 14 expected keys`() {
+    fun `toPayload contains all 15 expected keys`() {
         val payload = minimal().toPayload()
 
         val expected = listOf(
             "id", "timestamp", "method", "url",
             "requestHeaders", "requestBody", "requestSizeBytes",
             "responseCode", "responseMessage", "responseHeaders",
-            "responseBody", "responseSizeBytes", "durationMs", "error"
+            "responseBody", "responseSizeBytes", "durationMs", "error",
+            "mocked"
         )
         expected.forEach { key ->
             assertTrue("Missing key: $key", payload.containsKey(key))
         }
-        assertEquals(14, payload.size)
+        assertEquals(15, payload.size)
     }
 
     @Test
@@ -106,6 +107,15 @@ class HttpTransactionTest {
         val tx = minimal().copy(error = "Connection timed out")
         val payload = tx.toPayload()
         assertEquals("Connection timed out", payload["error"])
+    }
+
+    @Test
+    fun `toPayload emits mocked flag and defaults to false`() {
+        val payloadDefault = minimal().toPayload()
+        assertEquals(false, payloadDefault["mocked"])
+
+        val payloadMocked = minimal().copy(mocked = true).toPayload()
+        assertEquals(true, payloadMocked["mocked"])
     }
 
     @Test

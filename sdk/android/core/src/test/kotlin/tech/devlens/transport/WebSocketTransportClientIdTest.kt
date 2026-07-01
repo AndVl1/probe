@@ -8,10 +8,12 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import tech.devlens.Probe
 import java.util.Collections
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
@@ -150,6 +152,26 @@ class WebSocketTransportClientIdTest {
 
         assertEquals("hello", firstHello["type"])
         assertEquals("hello", secondHello["type"])
+
+        // minCliVersion MUST be a top-level field (sibling of type / appPackage /
+        // clientId), NOT nested inside a deviceInfo sub-map — the CLI gates on it
+        // before reading any device metadata. Accessing the key directly on the
+        // hello root proves placement; assertEquals catches both "missing" and
+        // "wrong value" (a nested copy would leave the top-level key null → fail).
+        assertEquals(
+            "minCliVersion must be a top-level field in the first hello",
+            Probe.MIN_CLI_VERSION,
+            firstHello["minCliVersion"]
+        )
+        assertEquals(
+            "minCliVersion must be a top-level field in the second hello",
+            Probe.MIN_CLI_VERSION,
+            secondHello["minCliVersion"]
+        )
+        // Defense in depth: there must be NO nested deviceInfo map carrying a
+        // shadow copy. (deviceInfo is spread flat into hello via putAll, so a
+        // well-formed hello has no "deviceInfo" key at all.)
+        assertFalse("hello must not nest a deviceInfo sub-map", firstHello.containsKey("deviceInfo"))
 
         val firstClientId = firstHello["clientId"] as String
         val secondClientId = secondHello["clientId"] as String

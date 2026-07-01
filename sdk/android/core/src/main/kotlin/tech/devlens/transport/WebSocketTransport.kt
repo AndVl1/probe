@@ -8,21 +8,26 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import tech.devlens.Probe
 import tech.devlens.QueryRequest
-import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.LinkedBlockingDeque
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 private const val TAG = "Probe.WS"
 private const val MAX_QUEUE_SIZE = 500
+/** How long the sender sleeps between connect-gate rechecks while disconnected. */
+private const val SENDER_GATE_IDLE_MS = 50L
 
 /**
  * WebSocket transport — connects to the Probe CLI server.
  *
  * Threading:
- * - [send] is non-blocking: puts items in a [LinkedBlockingQueue]
- * - A dedicated sender thread drains the queue and writes to WebSocket
+ * - [send] is non-blocking: appends to a bounded [LinkedBlockingDeque] (500, drop-oldest)
+ * - A dedicated sender thread drains the deque ONLY while connected, so messages
+ *   queued before the WebSocket opens (e.g. a plugin's attach-time snapshot)
+ *   are held and delivered in FIFO order once onOpen fires — never dropped
  * - Reconnect delays are scheduled via [ScheduledThreadPoolExecutor] — never block OkHttp threads
  *
  * @param serverUrl  WebSocket server URL (e.g. "ws://localhost:8484")
@@ -55,7 +60,11 @@ class WebSocketTransport(
      * byte-unchanged — their payloads do not set `op` and keep using [gson].
      */
     private val gsonSerializingNulls = GsonBuilder().serializeNulls().create()
-    private val queue = LinkedBlockingQueue<String>(MAX_QUEUE_SIZE)
+    // Deque (not a plain queue) so the sender can re-insert the head element via
+    // offerFirst when the connection drops mid-drain, preserving FIFO order
+    // across reconnects. send() still appends to the tail and drop-oldest uses
+    // poll() — identical FIFO semantics to a LinkedBlockingQueue.
+    private val queue = LinkedBlockingDeque<String>(MAX_QUEUE_SIZE)
     private val running = AtomicBoolean(false)
     private val connected = AtomicBoolean(false)
     private var webSocket: WebSocket? = null
@@ -173,9 +182,39 @@ class WebSocketTransport(
         senderThread = Thread({
             while (running.get()) {
                 try {
+                    // GATE: do not poll while disconnected. This holds messages
+                    // enqueued before onOpen (e.g. PreferencesPlugin's snapshot
+                    // emitted in onAttach, microseconds after connect() starts
+                    // the async handshake) in the queue so they drain in FIFO
+                    // order once the WebSocket opens. Without this gate the
+                    // sender polled pre-connect messages and silently dropped
+                    // them, losing every plugin's attach-time emission.
+                    //
+                    // A timed re-check (not a CountDownLatch) is deliberate:
+                    // reconnect flips `connected` back to true, and a one-shot
+                    // latch would need rebuilding on every reconnect cycle. The
+                    // short sleep keeps disconnect / running / shutdown responsive.
+                    if (!connected.get()) {
+                        Thread.sleep(SENDER_GATE_IDLE_MS)
+                        continue
+                    }
                     val json = queue.poll(500, TimeUnit.MILLISECONDS) ?: continue
                     val ws = webSocket
-                    if (ws != null && connected.get()) ws.send(json)
+                    if (ws != null && connected.get()) {
+                        ws.send(json)
+                    } else {
+                        // Connection dropped in the tiny window between the gate
+                        // check and poll returning. Put the message back at the
+                        // HEAD so FIFO order survives the reconnect drain. The
+                        // queue had >=1 free slot (we just polled); offerFirst
+                        // only fails if a concurrent send() refilled it, in which
+                        // case we drop the oldest to make room — matching the
+                        // bounded-queue backpressure policy in [send].
+                        if (!queue.offerFirst(json)) {
+                            queue.poll()
+                            queue.offerFirst(json)
+                        }
+                    }
                 } catch (e: InterruptedException) {
                     Thread.currentThread().interrupt()
                     break
@@ -191,6 +230,10 @@ class WebSocketTransport(
         put("type", "hello")
         put("appPackage", appPackage)
         put("clientId", clientId)
+        // Top-level (NOT inside deviceInfo): the CLI gates on this before it
+        // ever reads device metadata, so a version mismatch is surfaced even
+        // when the rest of the handshake would be unreadable to an old server.
+        put("minCliVersion", Probe.MIN_CLI_VERSION)
         putAll(deviceInfo)
     }
 

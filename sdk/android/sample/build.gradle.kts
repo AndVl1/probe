@@ -1,7 +1,18 @@
 plugins {
-    alias(libs.plugins.android.application)
+    // com.android.application is on the buildscript classpath via buildSrc
+    // (version "unknown" to Gradle → cannot use the version-catalog alias here).
+    id("com.android.application")
     alias(libs.plugins.kotlin.compose)
 }
+
+// Sample app identity. The sample is unpublished; these were previously set by
+// the root `subprojects {}` block. Kept here for consistency — the sample does
+// NOT apply the devlens-library convention (it's an android-application, not a
+// publishable library).
+group = "tech.devlens"
+val bomVersion = rootProject.extra["bomVersion"] as String
+val isRelease = providers.gradleProperty("release").orElse("false").get().toBoolean()
+version = if (isRelease) bomVersion else "$bomVersion-SNAPSHOT"
 
 android {
     namespace = "tech.devlens.sample"
@@ -39,6 +50,7 @@ android {
 dependencies {
     implementation(project(":plugin-network"))
     implementation(project(":plugin-db"))
+    implementation(project(":plugin-prefs"))
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)

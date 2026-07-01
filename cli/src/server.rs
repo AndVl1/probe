@@ -169,6 +169,14 @@ pub async fn run_control_subcommand(args: &Args, command: Command) -> Result<u8>
         // Serve is handled by run_server, not here.
         Command::Serve => unreachable!("serve is not a control subcommand"),
         Command::Db { db } => map_db_command(db, args.query_timeout_ms),
+        Command::Mock { mock } => match crate::mock::map_command(mock, args.query_timeout_ms) {
+            Ok(req) => req,
+            Err(e) => {
+                // MockSpecError = user argument/validation error → exit 2.
+                eprintln!("devlens: {}", e);
+                return Ok(crate::mock::EXIT_VALIDATION);
+            }
+        },
     };
     control_client::run_command(&socket, request).await
 }
@@ -444,6 +452,18 @@ pub async fn handle_connection(
                 // Clone the writer sender so the dispatcher can push Query
                 // frames through the same serialized writer path.
                 registry.register(conn_id, writer_tx.clone());
+                // Version guard: warn (stderr only) at most once per connection
+                // if the CLI is older than the SDK-advertised minCliVersion.
+                // Policy is WARN & CONTINUE — never break the connection.
+                // `hello.is_none()` ensures one warning per connection even on
+                // a re-hello. Borrow of `h` happens before the move below.
+                if hello.is_none() {
+                    if let crate::version::VersionCheck::Stale { cli, min } =
+                        crate::version::check_running_against(h.min_cli_version.as_deref())
+                    {
+                        eprintln!("{}", crate::version::format_warning(&cli, &min));
+                    }
+                }
                 hello = Some(h);
             }
             Ok(Message::Transaction(tx)) => {

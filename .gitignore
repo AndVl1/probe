@@ -14,6 +14,9 @@ sdk/android/plugin-network/build/
 sdk/android/plugin-db/build/
 sdk/android/plugin-prefs/build/
 sdk/android/plugin-layout/build/
+sdk/android/bom/build/
+sdk/android/buildSrc/build/
+sdk/android/buildSrc/.gradle/
 sdk/android/sample/build/
 sdk/android/local.properties
 sdk/ios/.build/

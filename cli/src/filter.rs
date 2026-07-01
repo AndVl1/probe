@@ -58,6 +58,7 @@ mod tests {
             duration_ms: Some(100),
             app_id: None,
             error: None,
+            mocked: None,
         }
     }
 

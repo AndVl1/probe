@@ -169,6 +169,14 @@ pub async fn run_control_subcommand(args: &Args, command: Command) -> Result<u8>
         // Serve is handled by run_server, not here.
         Command::Serve => unreachable!("serve is not a control subcommand"),
         Command::Db { db } => map_db_command(db, args.query_timeout_ms),
+        Command::Mock { mock } => match crate::mock::map_command(mock, args.query_timeout_ms) {
+            Ok(req) => req,
+            Err(e) => {
+                // MockSpecError = user argument/validation error → exit 2.
+                eprintln!("devlens: {}", e);
+                return Ok(crate::mock::EXIT_VALIDATION);
+            }
+        },
     };
     control_client::run_command(&socket, request).await
 }

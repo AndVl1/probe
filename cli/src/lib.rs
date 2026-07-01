@@ -4,6 +4,7 @@ pub mod control;
 pub mod control_client;
 pub mod display;
 pub mod filter;
+pub mod mock;
 pub mod protocol;
 pub mod query;
 pub mod server;
@@ -119,6 +120,14 @@ pub enum Command {
     Db {
         #[command(subcommand)]
         db: DbCommand,
+    },
+
+    /// Install and manage network response mocks on the connected device's
+    /// `network` plugin. Dispatched over the WS query/response path to the
+    /// active SDK (rides the same control plane as `db`).
+    Mock {
+        #[command(subcommand)]
+        mock: crate::mock::MockCommand,
     },
 }
 

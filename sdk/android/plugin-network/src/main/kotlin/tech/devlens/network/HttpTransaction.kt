@@ -14,7 +14,14 @@ data class HttpTransaction(
     val responseBody: String?,
     val responseSizeBytes: Long?,
     val durationMs: Long?,
-    val error: String?
+    val error: String?,
+    /**
+     * `true` when this transaction was produced by a network mock rule
+     * (the interceptor short-circuited without calling `chain.proceed()`),
+     * `false` for a real network round-trip. Emitted on the payload so the CLI
+     * can flag mocked traffic; absent/`false` on older SDKs is back-compatible.
+     */
+    val mocked: Boolean = false
 )
 
 internal fun HttpTransaction.toPayload(): Map<String, Any?> = mapOf(
@@ -31,7 +38,8 @@ internal fun HttpTransaction.toPayload(): Map<String, Any?> = mapOf(
     "responseBody" to responseBody,
     "responseSizeBytes" to responseSizeBytes,
     "durationMs" to durationMs,
-    "error" to error
+    "error" to error,
+    "mocked" to mocked
 )
 
 /**

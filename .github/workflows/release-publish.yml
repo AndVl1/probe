@@ -263,7 +263,7 @@ jobs:
           ./scripts/release-plan --publish-list --format=json > publish.json
           BODY="## What's published\n"
           BODY="${BODY}- **Android SDK**: "
-          BODY="${BODY}$(jq -r '[.modules[] | select(.status=="done") | \"\\(.name):\\(.version)\"] | join(", ")' publish.json)\n"
+          BODY="${BODY}$(jq -r '[.modules[] | select(.status=="done") | "\(.name):\(.version)"] | join(", ")' publish.json)\n"
           BODY="${BODY}- **BOM**: tech.devlens:devlens-bom:${VERSION}\n"
           if [ "$HAS_CLI" = "true" ]; then
             BODY="${BODY}- **CLI binary** → GitHub Release assets + Homebrew\n"

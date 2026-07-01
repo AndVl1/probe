@@ -18,11 +18,11 @@
 # tags exist, scripts/release-plan --plan is a safe no-op for every module.
 
 [bom]
-version = "0.3.0"
+version = "0.4.0"
 
 [modules]
-core = "0.3.0"
-plugin-network = "0.3.0"
-plugin-db = "0.3.0"
-plugin-prefs = "0.3.0"
-plugin-layout = "0.3.0"
+core = "0.4.0"
+plugin-network = "0.4.0"
+plugin-db = "0.3.1"
+plugin-prefs = "0.4.0"
+plugin-layout = "0.3.1"
